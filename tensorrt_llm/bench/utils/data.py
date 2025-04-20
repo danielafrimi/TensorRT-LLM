@@ -43,8 +43,65 @@ def initialize_tokenizer(model_name: str) -> PreTrainedTokenizer:
     Returns:
         PreTrainedTokenizer: An initialized HuggingFace tokenizer.
     """
-    # Initialize the tokenizer specific to the model that we are planning
-    # to benchmark.
+    import os
+
+    from transformers import AutoConfig
+
+    # Special handling for NVILA models which have tokenizers in the llm subdirectory
+    if "NVILA" in model_name and os.path.isdir(model_name):
+        llm_path = os.path.join(model_name, "llm")
+        if os.path.exists(llm_path):
+            print(f"NVILA model detected. Loading tokenizer from {llm_path}")
+            try:
+                # Load config from the llm subdirectory
+                llm_cfg = AutoConfig.from_pretrained(llm_path)
+
+                # Initialize the tokenizer with NVILA-specific parameters
+                tokenizer = AutoTokenizer.from_pretrained(
+                    llm_path,
+                    model_max_length=llm_cfg.model_max_length,
+                    padding_side="right",  # NVILA uses right padding
+                    use_fast=False,  # NVILA requires the slow tokenizer
+                    legacy=False,
+                    trust_remote_code=True)
+
+                # Add sentinel token used by NVILA
+                SENTINEL_TOKEN = "<vila/sentinel>"  # This is the value used in the original code
+                if not hasattr(tokenizer, "sentinel_token"):
+                    tokenizer.add_tokens([SENTINEL_TOKEN], special_tokens=True)
+                    tokenizer.sentinel_token = SENTINEL_TOKEN
+                    tokenizer.sentinel_token_id = tokenizer.convert_tokens_to_ids(
+                        SENTINEL_TOKEN)
+
+                # Set stop tokens for the tokenizer
+                tokenizer.stop_tokens = [
+                    tokenizer.decode(tokenizer.eos_token_id)
+                ]
+                tokenizer.stop_token_ids = tokenizer.convert_tokens_to_ids(
+                    tokenizer.stop_tokens)
+
+                # Add media tokens for multimodal capabilities
+                media_tokens = {
+                    "image": "<image>",
+                    "video": "<vila/video>",
+                }
+                tokenizer.media_tokens = media_tokens
+                tokenizer.media_token_ids = {}
+                for name, token in media_tokens.items():
+                    tokenizer.add_tokens([token], special_tokens=True)
+                    tokenizer.media_token_ids[
+                        name] = tokenizer.convert_tokens_to_ids(token)
+
+                # Set padding if needed
+                if tokenizer.pad_token_id is None:
+                    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+
+                return tokenizer
+            except Exception as e:
+                print(f"Error loading NVILA tokenizer from {llm_path}: {e}")
+                print("Falling back to standard tokenizer initialization")
+
+    # Standard tokenizer initialization for non-NVILA models
     tokenizer = AutoTokenizer.from_pretrained(model_name,
                                               padding_side="left",
                                               trust_remote_code=True)
