@@ -251,7 +251,6 @@ class ReportUtility:
             }
         else:
             from tensorrt_llm._torch.model_config import ModelConfig
-            from tensorrt_llm._utils import torch_dtype_to_str
 
             model = self.rt_cfg.model_path or self.rt_cfg.model
             model_config = ModelConfig.from_pretrained(model,
@@ -261,16 +260,14 @@ class ReportUtility:
                 self.kwargs["pytorch_backend_config"].kv_cache_dtype)
 
             stats_dict["engine"] |= {
-                "backend":
-                "Pytorch",
+                "backend": "Pytorch",
                 "dtype":
-                torch_dtype_to_str(
-                    model_config.pretrained_config.torch_dtype
-                    or model_config.pretrained_config.text_config.torch_dtype),
-                "kv_cache_dtype":
-                model_config.quant_config.kv_cache_quant_algo,
-                "quantization":
-                model_config.quant_config.quant_algo
+                # torch_dtype_to_str( # todo (dafrimi) didn't fetch the torch dtype from the model config (vilaConfig) somehow, even though it there
+                #     model_config.pretrained_config.torch_dtype
+                #     or model_config.pretrained_config.text_config.torch_dtype),
+                "bfloat16",
+                "kv_cache_dtype": model_config.quant_config.kv_cache_quant_algo,
+                "quantization": model_config.quant_config.quant_algo
             }
 
         # World and runtime info

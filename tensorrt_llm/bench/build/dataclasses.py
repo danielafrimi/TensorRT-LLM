@@ -256,7 +256,6 @@ class ModelConfig(BaseModel):
     @classmethod
     def from_hf(cls, model_hf_name, hf_model_path):
         model_name_or_path = hf_model_path or model_hf_name
-
         # Special handling for NVILA models
         if "NVILA" in model_name_or_path and os.path.isdir(model_name_or_path):
             # Try to load from the LLM component first

@@ -227,6 +227,7 @@ def throughput_command(
 
     # Dataset Loading and Preparation
     with open(dataset_path, "r") as dataset:
+        model_type = "llava_llama"  # todo (dafrimi) hard code to support nvila
         metadata, requests = create_dataset_from_stream(
             tokenizer,
             dataset,
