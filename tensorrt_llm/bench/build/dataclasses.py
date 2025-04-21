@@ -275,46 +275,6 @@ class ModelConfig(BaseModel):
                     print(
                         f"Warning: Failed to load config from llm directory: {e}"
                     )
-
-            # Fallback to hard-coded configs for known NVILA models
-            if "8B" in model_name_or_path:
-                hf_config = {
-                    "model_type": "llama",
-                    "num_hidden_layers": 32,
-                    "num_attention_heads": 32,
-                    "num_key_value_heads": 32,
-                    "hidden_size": 4096,
-                    "max_position_embeddings": 4096,
-                    "is_multimodal": True,
-                }
-            elif "3B" in model_name_or_path:
-                hf_config = {
-                    "model_type": "llama",
-                    "num_hidden_layers": 26,
-                    "num_attention_heads": 32,
-                    "num_key_value_heads": 32,
-                    "hidden_size": 2560,
-                    "max_position_embeddings": 4096,
-                    "is_multimodal": True,
-                }
-            else:
-                # Generic multimodal model config
-                hf_config = {
-                    "model_type": "llama",
-                    "num_hidden_layers": 32,
-                    "num_attention_heads": 32,
-                    "num_key_value_heads": 32,
-                    "hidden_size": 4096,
-                    "max_position_embeddings": 4096,
-                    "is_multimodal": True,
-                }
-
-            param_count = cls.get_param_count(model_hf_name, hf_model_path)
-            print(f"NVILA model detected: {model_name_or_path}")
-            print(f"Using fallback config: {hf_config}")
-            print(f"Parameter count: {param_count}")
-            return cls(name=model_hf_name, param_count=param_count, **hf_config)
-
         # Regular model handling
         try:
             hf_config = AutoConfig.from_pretrained(
