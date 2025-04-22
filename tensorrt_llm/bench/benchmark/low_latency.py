@@ -19,9 +19,10 @@ from tensorrt_llm.bench.dataclasses.configuration import RuntimeConfig
 from tensorrt_llm.bench.dataclasses.general import BenchmarkEnvironment
 from tensorrt_llm.bench.dataclasses.reporting import ReportUtility
 from tensorrt_llm.llmapi import LLM, CapacitySchedulerPolicy
+from tensorrt_llm.models.modeling_utils import SpeculativeDecodingMode
 
 # isort: off
-from tensorrt_llm.bench.benchmark.utils.general import get_settings_from_engine, get_settings
+from tensorrt_llm.bench.benchmark.utils.general import get_settings_from_engine, get_settings, SUPPORTED_BACKENDS, PYTHON_SUPPORTED_BACKENDS
 # isort: on
 from tensorrt_llm.bench.utils.data import (create_dataset_from_stream,
                                            initialize_tokenizer,
@@ -43,8 +44,8 @@ from tensorrt_llm.sampling_params import SamplingParams
     help="Path to a serialized TRT-LLM engine.",
 )
 @optgroup.option("--backend",
-                 type=click.Choice(["pytorch", "autodeploy"]),
-                 default=None,
+                 type=click.Choice(SUPPORTED_BACKENDS),
+                 default="pytorch",
                  help="Set to 'pytorch' for pytorch path. Default is cpp path.")
 @optgroup.option(
     "--kv_cache_free_gpu_mem_fraction",
@@ -188,17 +189,13 @@ def latency_command(
     kv_cache_percent = params.pop("kv_cache_free_gpu_mem_fraction")
     medusa_choices = params.pop("medusa_choices")
 
-    # # Reporting Options
+    # Reporting Options
     report_json: Path = params.pop("report_json")
     iteration_log: Path = params.pop("iteration_log")
     iteration_writer = IterationWriter(iteration_log)
 
     # Initialize the HF tokenizer for the specified model.
-    # ignore_eos = True if runtime_config.decoding_config.decoding_mode == SpeculativeDecodingMode.NONE else False # TODO (dafrimi): nto sure where to locate this line since it requires the runConfig, but tokenizer is used to get the dataset
-    ignore_eos = False
     tokenizer = initialize_tokenizer(checkpoint_path)
-    eos_id = tokenizer.eos_token_id if not ignore_eos else -1
-    pad_id = tokenizer.pad_token_id if not ignore_eos else -1
 
     # Dataset Loading and Preparation
     with open(dataset_path, "r") as dataset:
@@ -222,7 +219,7 @@ def latency_command(
 
     # Engine configuration parsing for PyTorch backend
     kwargs = {}
-    if backend and backend.lower() in ["pytorch", "autodeploy"]:
+    if backend and backend.lower() in PYTHON_SUPPORTED_BACKENDS:
         exec_settings = get_settings(params, metadata, bench_env.model,
                                      bench_env.checkpoint_path)
         kwargs_max_sql = max_seq_len or metadata.max_sequence_length
@@ -288,6 +285,10 @@ def latency_command(
             llm = PyTorchLLM(**kwargs)
         else:
             llm = LLM(**kwargs)
+
+        ignore_eos = True if runtime_config.decoding_config.decoding_mode == SpeculativeDecodingMode.NONE else False
+        eos_id = tokenizer.eos_token_id if not ignore_eos else -1
+        pad_id = tokenizer.pad_token_id if not ignore_eos else -1
 
         sampling_params = SamplingParams(end_id=eos_id,
                                          pad_id=pad_id,
