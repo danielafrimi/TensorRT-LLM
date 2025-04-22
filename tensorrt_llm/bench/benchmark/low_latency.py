@@ -194,7 +194,7 @@ def latency_command(
     iteration_writer = IterationWriter(iteration_log)
 
     # Initialize the HF tokenizer for the specified model.
-    # ignore_eos = True if runtime_config.decoding_config.decoding_mode == SpeculativeDecodingMode.NONE else False # TODO (dafrimi): think of better way to use the runconfig
+    # ignore_eos = True if runtime_config.decoding_config.decoding_mode == SpeculativeDecodingMode.NONE else False # TODO (dafrimi): nto sure where to locate this line since it requires the runConfig, but tokenizer is used to get the dataset
     ignore_eos = False
     tokenizer = initialize_tokenizer(checkpoint_path)
     eos_id = tokenizer.eos_token_id if not ignore_eos else -1
@@ -213,10 +213,6 @@ def latency_command(
             max_input_seq_len_for_multimodal=max_input_len)
 
         metadata.dataset_path = dataset_path
-        # params["target_input_len"] = params.get(
-        #     "target_input_len") or metadata.avg_isl
-        # params["target_output_len"] = params.get(
-        #     "target_output_len") or metadata.avg_osl
 
     if modality is None:
         # Log dataset info
