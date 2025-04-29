@@ -350,7 +350,15 @@ class ModelLoader:
         """
         quant_config = self.llm_args.quant_config
 
-        hf_quant_config_path = f"{self._model_dir}/hf_quant_config.json"
+        if "vila" in str(
+                self._model_dir
+        ):  # todo for nvila/vila models the quant config are in the llm subdir and not in the root one
+            quant_config_model_dir = self._model_dir / "llm"
+            hf_quant_config_path = f"{quant_config_model_dir}/hf_quant_config.json"
+        else:
+            hf_quant_config_path = f"{self._model_dir}/hf_quant_config.json"
+
+        # hf_quant_config_path = f"{self._model_dir}/hf_quant_config.json"
         if os.path.exists(hf_quant_config_path):
             logger.info(
                 f"Found {hf_quant_config_path}, pre-quantized checkpoint is used."

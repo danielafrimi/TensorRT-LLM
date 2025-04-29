@@ -540,7 +540,9 @@ class DecoderModelForCausalLM(nn.Module,
                 else:
                     module_weights = filter_weights(name, weights)
                     if hasattr(module, 'load_weights'):
-                        module.load_weights(weights=[module_weights])
+                        module.load_weights(weights=[
+                            module_weights
+                        ])  # 'model.embed_tokens' fails here
                     else:
                         for n, p in module._parameters.items():
                             if p is not None:

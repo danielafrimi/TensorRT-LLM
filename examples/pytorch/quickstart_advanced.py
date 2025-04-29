@@ -1,4 +1,5 @@
 import argparse
+from pathlib import Path
 
 from tensorrt_llm import SamplingParams
 from tensorrt_llm._torch import LLM
@@ -43,7 +44,7 @@ def add_llm_args(parser):
     # Parallelism
     parser.add_argument('--attention_backend',
                         type=str,
-                        default='TRTLLM',
+                        default='FLASHINFER',
                         choices=[
                             'VANILLA', 'TRTLLM', 'FLASHINFER',
                             'FLASHINFER_STAR_ATTENTION'
@@ -127,7 +128,7 @@ def setup_llm(args):
     else:
         spec_config = None
 
-    llm = LLM(model=args.model_dir,
+    llm = LLM(model=Path(args.model_dir),
               max_seq_len=args.max_seq_len,
               max_batch_size=args.max_batch_size,
               max_num_tokens=args.max_num_tokens,
