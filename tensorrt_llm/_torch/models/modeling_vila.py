@@ -642,6 +642,8 @@ def init_llm(
     llm_model_config = copy.deepcopy(model_config)
     llm_model_config.pretrained_config = llm_cfg
     llm = AutoModelForCausalLM.from_config(llm_model_config)
+    device = kwargs.get("device", "cuda")
+    llm.to(device=device)  # todo pass here the model into gpu
     if llm_cfg.vocab_size != len(tokenizer):
         warnings.warn(
             "LLM have a different vocab size than tokenizer. Consider update the LLM checkpoint with the tokenizer's vocab size with resize_token_embeddings()."
@@ -1132,6 +1134,10 @@ class VilaModel(PreTrainedModel):
 
         self.model_dtype = _convert_dtype(
             getattr(config, "model_dtype", "torch.float16"))
+
+        # todo maybe we need to do it for all components of the model ?
+        # self.llm_dtype = _convert_dtype(config.llm_cfg.get("torch_dtype", "torch.float16"))
+
         if not hasattr(config, "model_dtype"):
             warnings.warn(
                 "model_dtype not found in config, defaulting to torch.float16.")
@@ -1141,8 +1147,8 @@ class VilaModel(PreTrainedModel):
         self.tokenizer, self.llm, self.llm_path, self.vocab_size = init_llm(
             self.llm_path, model_config, *args, **kwargs
         )  # self.llm_path may be updated if ckpt re-saving is needed & existing path is read-only
-        device = kwargs.get("device", "cuda")
-        self.llm.to(device=device, dtype=self.model_dtype)
+        # device = kwargs.get("device", "cuda")
+        # self.llm.to(device=device, dtype=self.llm_dtype) # todo this conversion also change the dtype of the quntization layers as well.
 
         self.post_config()
 

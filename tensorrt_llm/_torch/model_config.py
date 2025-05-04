@@ -73,6 +73,7 @@ class ModelConfig(Generic[TConfig]):
     def from_pretrained(cls,
                         checkpoint_dir: str,
                         trust_remote_code=False,
+                        is_input_processor=False,
                         **kwargs):
         pretrained_config = transformers.AutoConfig.from_pretrained(
             checkpoint_dir,
@@ -87,7 +88,11 @@ class ModelConfig(Generic[TConfig]):
         quant_config = QuantConfig()
         layer_quant_config = None
         # quantized ckpt in modelopt format
-        quant_config_file = model_dir / 'hf_quant_config.json'
+        if "vila" in str(model_dir) and not is_input_processor:
+            # TODO need a fix here to deal with different components of the model
+            quant_config_file = model_dir / "llm" / 'hf_quant_config.json'  # todo need a fix since for vision and projection we have a different quntization so we need to understand how to pass the "llm" part as well.
+        else:
+            quant_config_file = model_dir / 'hf_quant_config.json'
         if quant_config_file.exists():
             with open(quant_config_file) as f:
                 quant_config_dict = json.load(f)
