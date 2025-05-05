@@ -205,12 +205,16 @@ class Linear(nn.Module):
         self.has_fp8_qdq = False
         self.has_fp8_block_scales = False
         self.has_nvfp4 = False
+        self.has_w4a16_awq = False
         # only _create_weights, and load quantized weight directly.
         if self.quant_config and self.quant_config.layer_quant_mode.has_any_quant(
         ):
             self.has_any_quant = True
             qc = self.quant_config
             if qc.layer_quant_mode.has_fp8_qdq():
+                print(
+                    f"fp8 qdq is true creating weight with dtype = {torch.float8_e4m3fn} where scale and input scale are fp32"
+                )
                 self.has_fp8_qdq = True
                 self.weight = Parameter(torch.empty(weight_shape,
                                                     dtype=torch.float8_e4m3fn,
@@ -287,6 +291,17 @@ class Linear(nn.Module):
                                                    dtype=torch.float32,
                                                    device=device),
                                        requires_grad=False)
+            elif qc.layer_quant_mode.has_w4a16_awq():
+                print(
+                    f"w4a16_awq is true creating weight with dtype = {fp4_utils.float4_e2m1x2} need to fix here - assertion"
+                )
+                self.has_w4a16_awq = True
+                self.weight = Parameter(torch.empty(
+                    weight_shape, dtype=fp4_utils.float4_e2m1x2, device=device),
+                                        requires_grad=False)
+
+                # todo add here more
+
             else:
                 # TODO(zhenhuanc): support other quant mode
                 raise ValueError(f'unsupported quant mode: {qc.quant_mode}')
@@ -315,6 +330,7 @@ class Linear(nn.Module):
                 else:
                     qinput = input
                 # This op does not support bias now.
+                # todo this is a binding from cublasScaledMM.cpp
                 output = torch.ops.trtllm.cublas_scaled_mm(
                     qinput,
                     weight.t(),
@@ -351,16 +367,18 @@ class Linear(nn.Module):
                                                      self.dtype)
                 if bias is not None:
                     output = output + bias
+            elif self.has_w4a16_awq:
+                # todo add here more
+                pass
             else:
                 # TODO(zhenhuanc): support other quant mode
                 raise ValueError(f'unsupported quant mode: {qc.quant_mode}')
         else:
             # TODO: remove custom cublas_mm when default heuristics is good enough
             if self.use_custom_cublas_mm:
-                output = torch.ops.trtllm.cublas_mm(input,
-                                                    self.weight.t(),
-                                                    bias,
-                                                    out_dtype=None)
+                output = torch.ops.trtllm.cublas_mm(
+                    input, self.weight.t(), bias, out_dtype=None
+                )  # todo this is a binding from cublasScaledMM.cpp
             else:
                 output = F.linear(input, self.weight, bias)
         return output
@@ -420,6 +438,7 @@ class Linear(nn.Module):
             dst.data.copy_(src)
 
         weight_mode = self.weights_loading_config.weight_mode
+        print(f"weight mode is = {weight_mode}")
         quant_mode = self.quant_config.quant_mode if self.quant_config else None
         # load weight shard onto GPU to speed up operations on the shards
         device = torch.device('cuda')

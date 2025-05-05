@@ -373,6 +373,7 @@ class VilaMultimodalProjectorConfig(PretrainedConfig):
 
 class VilaMultimodalProjector(PreTrainedModel):
     config_class = VilaMultimodalProjectorConfig
+    print(f"creating projector from scratch................")
 
     def __init__(self, mm_projector_cfg: VilaMultimodalProjectorConfig,
                  config: PretrainedConfig):
@@ -511,7 +512,6 @@ def init_tokenizer(llm_path: str):
 
 def init_vision_tower(model_name_or_path: str,
                       config: PretrainedConfig) -> PreTrainedModel:
-
     use_s2 = getattr(config, "s2", False)
     use_dynamic_s2 = getattr(config, "dynamic_s2", False)
 
@@ -531,6 +531,7 @@ def init_vision_tower(model_name_or_path: str,
             image_processor.size["height"] = image_processor.size[
                 "width"] = vision_tower.scales[-1]
     else:
+        print(f"creating vision tower................")
         vision_tower = VisionTower(model_name_or_path, config)
 
     config.mm_hidden_size = (vision_tower.config.hidden_size
@@ -542,6 +543,7 @@ def init_vision_tower(model_name_or_path: str,
 
 def init_mm_projector(model_type_or_path: str,
                       config: PretrainedConfig) -> PreTrainedModel:
+    print(f"creating mm projector................")
     if model_type_or_path is None:
         return None
 
@@ -641,9 +643,10 @@ def init_llm(
 
     llm_model_config = copy.deepcopy(model_config)
     llm_model_config.pretrained_config = llm_cfg
+    print(f"creating llm................")
     llm = AutoModelForCausalLM.from_config(llm_model_config)
     device = kwargs.get("device", "cuda")
-    llm.to(device=device)  # todo pass here the model into gpu
+    llm.to(device=device)
     if llm_cfg.vocab_size != len(tokenizer):
         warnings.warn(
             "LLM have a different vocab size than tokenizer. Consider update the LLM checkpoint with the tokenizer's vocab size with resize_token_embeddings()."

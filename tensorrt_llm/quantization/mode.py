@@ -88,6 +88,8 @@ class QuantMode(IntFlag):
     NVFP4 = auto()
     NVFP4_KV_CACHE = auto()
 
+    W4A16_AWQ = auto()
+
     # The smallest power-of-two that is not used by a flag. Do not call auto() after that line.
     COUNT = auto()
 
@@ -165,6 +167,9 @@ class QuantMode(IntFlag):
 
     def has_fp8_qdq(self):
         return self._any(self.FP8_QDQ)
+
+    def has_w4a16_awq(self):
+        return self._any(self.W4A16_AWQ)
 
     def has_fp8_rowwise(self):
         return self._any(self.FP8_ROWWISE)
