@@ -291,16 +291,53 @@ class Linear(nn.Module):
                                                    dtype=torch.float32,
                                                    device=device),
                                        requires_grad=False)
-            elif qc.layer_quant_mode.has_w4a16_awq():
+            elif qc.layer_quant_mode.is_int4_weight_only_per_group():
+                # This block handles INT4 weight-only quantization with per-group scaling (e.g., W4A16_AWQ)
                 print(
-                    f"w4a16_awq is true creating weight with dtype = {fp4_utils.float4_e2m1x2} need to fix here - assertion"
+                    f"INFO: Handling INT4 weight-only per-group quantization (e.g., W4A16_AWQ)."
                 )
-                self.has_w4a16_awq = True
-                self.weight = Parameter(torch.empty(
-                    weight_shape, dtype=fp4_utils.float4_e2m1x2, device=device),
-                                        requires_grad=False)
+                self.has_w4a16_awq = True  # Mark that this is an AWQ-compatible path
 
-                # todo add here more
+                # Weights are INT4, packed into uint8 (2x INT4 per byte)
+                # Shape: (out_features, in_features / 2)
+                self.weight = Parameter(
+                    torch.empty(
+                        (self.out_features, self.in_features // 2),
+                        dtype=torch.
+                        uint8,  # Matches typical checkpoint format for packed INT4
+                        device=device),
+                    requires_grad=False)
+
+                # Scales are per-group and per-output-channel
+                group_size = qc.group_size
+                if self.in_features % group_size != 0:
+                    # This case should ideally be handled by padding during weight preparation
+                    # or caught by an earlier assertion.
+                    # Standard AWQ often assumes K is a multiple of group_size.
+                    raise ValueError(
+                        f"in_features ({self.in_features}) must be divisible by group_size ({group_size}) "
+                        f"for INT4 per-group quantization scale dimensions.")
+
+                # Shape: (out_features, in_features / group_size)
+                self.weight_scale = Parameter(
+                    torch.empty(
+                        (self.out_features, self.in_features // group_size),
+                        dtype=torch.float16,  # Scales are typically float16
+                        device=device),
+                    requires_grad=False)
+
+                self.pre_quant_scale = Parameter(torch.empty(
+                    (self.in_features, ), dtype=torch.float16, device=device),
+                                                 requires_grad=False)
+
+                # AWQ INT4 weights typically do not have zero-points.
+                # If quant_config.has_zero_point were true, you would define self.zeros here,
+                # similar to self.weight_scale, possibly packed if zeros are also INT4.
+                # For example:
+                # self.zeros = Parameter(torch.empty(
+                #    (self.out_features, self.in_features // group_size // 2), # Packed INT4 zeros
+                #    dtype=torch.uint8,
+                #    device=device), requires_grad=False)
 
             else:
                 # TODO(zhenhuanc): support other quant mode
@@ -330,7 +367,6 @@ class Linear(nn.Module):
                 else:
                     qinput = input
                 # This op does not support bias now.
-                # todo this is a binding from cublasScaledMM.cpp
                 output = torch.ops.trtllm.cublas_scaled_mm(
                     qinput,
                     weight.t(),
@@ -540,6 +576,23 @@ class Linear(nn.Module):
                     fused_fp8_block_scale = torch.cat(
                         (q_scale, k_scale, v_scale))
                     _copy(self.weight_scale, fused_fp8_block_scale)
+                elif quant_mode.is_int4_weight_only_per_group():
+                    # Load individual Q, K, V parts
+                    print("im here")
+                    print(f"weights[0]['weight'] is {weights[0]['weight']}")
+                    print(
+                        f"weights[1]['weight'].shape is {weights[1]['weight'].shape}"
+                    )
+                    # For AWQ, these might be uint8 but with K-dim not yet halved.
+                    raw_q_weight = load_weight_shard(weights[0]['weight'],
+                                                     self.tp_size, self.tp_rank,
+                                                     self.tp_mode, device)
+                    raw_k_weight = load_weight_shard(weights[1]['weight'],
+                                                     self.tp_size, self.tp_rank,
+                                                     self.tp_mode, device)
+                    raw_v_weight = load_weight_shard(weights[2]['weight'],
+                                                     self.tp_size, self.tp_rank,
+                                                     self.tp_mode, device)
 
             fused_weight = torch.cat((q_weight, k_weight, v_weight))
 
