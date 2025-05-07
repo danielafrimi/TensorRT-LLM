@@ -796,8 +796,7 @@ class PyTorchModelEngine(ModelEngine):
             model.to("cuda")
 
             if load_format == LoadFormat.AUTO:
-                if hasattr(model, 'llm_checkpoint_dir'
-                           ):  # todo maybe add this too in build_model
+                if hasattr(model, 'llm_checkpoint_dir'):
                     weights = load_weights(model.llm_checkpoint_dir)
                 else:
                     weights = load_weights(checkpoint_dir)
