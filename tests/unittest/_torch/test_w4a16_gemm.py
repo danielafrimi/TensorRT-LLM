@@ -11,6 +11,40 @@ import torch
 from tests.unittest.trt.quantization import _utils
 
 
+def create_idenetity_matrix_after_unpacking(k, n):
+
+    target_identity_ref_q_weight = torch.eye(k,
+                                             n,
+                                             dtype=torch.int8,
+                                             device="cpu")
+
+    unprocessed_weight_cpu = torch.zeros(k,
+                                         n // 2,
+                                         dtype=torch.int8,
+                                         device="cpu")
+
+    # 3. Pack the values from target_identity_ref_q_weight into unprocessed_weight_cpu
+    for i in range(k):
+        for j_packed in range(n // 2):
+            # Value that should appear at the even column index in ref_q_weight (e.g., ref_q_weight[i, 0], ref_q_weight[i, 2], ...)
+            val_for_even_output_idx = target_identity_ref_q_weight[i,
+                                                                   2 * j_packed]
+            # Value that should appear at the odd column index in ref_q_weight (e.g., ref_q_weight[i, 1], ref_q_weight[i, 3], ...)
+            val_for_odd_output_idx = target_identity_ref_q_weight[i,
+                                                                  2 * j_packed +
+                                                                  1]
+
+            # The unpacker places the lower 4 bits of packed_value into the even output index
+            # and the higher 4 bits into the odd output index.
+            # So, val_for_even_output_idx must go into the lower nibble,
+            # and val_for_odd_output_idx must go into the higher nibble.
+            packed_value = (val_for_odd_output_idx.item() << 4) | (
+                val_for_even_output_idx.item() & 0x0F)
+            unprocessed_weight_cpu[i, j_packed] = packed_value
+
+    return unprocessed_weight_cpu
+
+
 def run_w4a16_gemm_test(m, n, k, group_size, activation_dtype,
                         quantized_weight_dtype, has_zero, has_bias,
                         has_pre_quant, device):
@@ -30,41 +64,32 @@ def run_w4a16_gemm_test(m, n, k, group_size, activation_dtype,
     zero = torch.randn(total_groups, n, dtype=activation_dtype,
                        device="cuda") if has_zero else None
 
-    # num_weights_in_32_bits = 8
-    # use_int8_weight = 0
-    # assert n % num_weights_in_32_bits == 0, f"n must be a multiple of {num_weights_in_32_bits}"
+    unprocessed_weight_cpu = create_idenetity_matrix_after_unpacking(k, n)
 
-    # shape with int32 now (k, n // 8) -> [64,128]
+    # unprocessed_weight needs to be on the specified device for the GEMM operation
+    unprocessed_weight = unprocessed_weight_cpu.to(device)
 
-    unprocessed_weight = torch.randint(
-        -128,
-        127,
-        (
-            k, n // 2
-        ),  # since the dtype if int32, and each element is 4 bits, we divide by 8.
-        dtype=torch.int8,  # does it need to be uint or int?
-        device="cuda")
-    # shape with int8 is (k, n // 2) -> [64,512]
-    # unprocessed_weight = unprocessed_int_weight.view(torch.int8) # unpacks" each int32 into four consecutive int8 values - the shape becomes (k, (n // 8) * 4), which simplifies to (k, n // 2)
+    # unprocessed_weight = torch.randint(
+    #     -128,
+    #     127,(k, n // 2),
+    #     dtype=torch.int8,  # todo does it need to be uint or int?
+    #     device="cuda")
+
     unpacker = torch.ops.trtllm.unpack_int4_packed_tensor_to_int8
     # Weights must be a CPU Tensor
     ref_q_weight = unpacker(
-        unprocessed_weight.cpu())  # after unpack [k,n] -> [64, 1024]
-    preprocessor = torch.ops.trtllm.preprocess_weights_for_mixed_gemm
+        unprocessed_weight.cpu())  # after unpack shape is [k,n]
 
-    cuda_q_weight = preprocessor(unprocessed_weight.cpu(),
-                                 quantized_weight_dtype,
-                                 activation_dtype)  # shape is [64, 512]]
+    # preprocessor = torch.ops.trtllm.preprocess_weights_for_mixed_gemm
 
-    # todo delete it
-    aa = torch.tensor([[1, 16]], dtype=torch.int8).reshape(2, 1)
-    unpacked_aa = unpacker(aa)
-    print(unpacked_aa)
+    # cuda_q_weight_from_preprocessor = preprocessor(unprocessed_weight.cpu(),
+    #                              quantized_weight_dtype,
+    #                              activation_dtype)
 
     scale_ref = scale.repeat_interleave(group_size, dim=0)[:k, :]
     ref_th_weight = ref_q_weight.cuda().to(
         activation_dtype
-    ) * scale_ref  # convert the weight to FP16 as activation + quantize the weights
+    ) * scale_ref  # convert the weight to FP16 as activation + dequantize the weights
 
     if has_zero:
         # NOTE needs to change the singture of the kernel, for now we are not using zeros, but needs to pass them
@@ -79,33 +104,40 @@ def run_w4a16_gemm_test(m, n, k, group_size, activation_dtype,
     scale = scale.contiguous()
     zero = zero.contiguous()
     bias = bias.contiguous()
-    cuda_q_weight = cuda_q_weight.cuda().contiguous()
+    # Ensure cuda_q_weight for the op is from the unprocessed_weight directly
+    cuda_q_weight = unprocessed_weight.cuda().contiguous()
+
+    print(f"activation tensor is {activation}")
+    print(f"cuda_q_weight tensor is {cuda_q_weight}")
+    print(f"ref_th_weight tensor is {ref_th_weight}")
 
     output = torch.ops.tensorrt_llm.w4a16_gemm(activation, cuda_q_weight, scale,
                                                zero, bias, group_size)
 
+    # ref is based on ref_th_weight, which in turn is based on the TRT-LLM unpacker op
     ref = _utils.woq_groupwise_gt_matmul(activation,
                                          ref_th_weight.to(activation_dtype),
                                          bias)
+
+    print(f"ref tensor is {ref}")
+    print(f"output tensor is {output}")
+    # Using a slightly relaxed tolerance for initial testing
     _utils.woq_assert_near_eq(ref, output, 2)
 
 
 if __name__ == "__main__":
     # Define GEMM dimensions and parameters based on a test case
-    m = 2
-    n = 2  # Output features
-    k = 2  # Inner dimension (input features for the layer)
-    group_size = 2
+    m = 8
+    n = 64  # Output features. n // 2 must be a multiple of 32 for the preprocessor.
+    k = 64  # Inner dimension (input features for the layer), MUST BE A MULTIPLE OF 32
+    group_size = 64  # k must be a multiple of group_size for scale_ref.repeat_interleave to work as expected with [:k,:]
     activation_type = torch.float16
     quantized_weight_dtype = torch.quint4x2
 
     # --- Configuration Flags ---
     HAS_ZERO = True
     HAS_BIAS = True
-    has_pre_quant = False
-    # Set to True if C++ uses FINEGRAINED_SCALE_AND_ZEROS for the math,
-    # False if it uses scale-only math (even if zeros are provided for structure)
-    QUANT_MODE_USES_ZEROS = False  # This aligns with the original script's reference calculation: (ref_q_weight_float * scale_ref)
+    has_pre_quant = False  # todo change to true
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 

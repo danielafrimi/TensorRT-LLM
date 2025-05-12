@@ -8,9 +8,13 @@
 #include "tensorrt_llm/runtime/torchUtils.h"
 
 #include <ATen/cuda/CUDAContext.h> // For at::cuda::getCurrentCUDAStream
+#include <algorithm>               // For std::min
+#include <cuda_runtime.h>          // For cudaError_t, cudaDeviceSynchronize, cudaGetErrorString
+#include <iomanip>                 // For std::fixed, std::setprecision
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <stdexcept> // For std::runtime_error
 #include <string>
 #include <tuple>
 #include <vector>
@@ -28,8 +32,6 @@ using ScaleT = half;
 using BiasT = half;
 using OutputT = half;
 
-// we'll assume FINEGRAINED_SCALE_ONLY.
-// A more robust op might take QuantMode as an argument or have different op variants.
 const cutlass::WeightOnlyQuantOp QuantMode = cutlass::WeightOnlyQuantOp::FINEGRAINED_SCALE_ONLY;
 
 using W4A16Runner = tensorrt_llm::kernels::cutlass_kernels::CutlassFpAIntBGemmRunner<ActivationT, WeightPackedT,
@@ -67,7 +69,7 @@ torch::Tensor w4a16_gemm_op_forward(torch::Tensor A_tensor, torch::Tensor B_pack
 
     // --- Get Dimensions ---
     TORCH_CHECK(A_tensor.dim() >= 2, "Activation A must be at least 2D");
-    // Assuming B_packed_tensor is [K, N_packed] where N_packed = N_orig / 2
+    // Assuming B_packed_tensor is [K, N_packed] where N_packed = N_orig // 2
     TORCH_CHECK(B_packed_tensor.dim() == 2, "Packed Weights B must be 2D");
 
     int M = 0;
@@ -208,13 +210,250 @@ torch::Tensor w4a16_gemm_op_forward(torch::Tensor A_tensor, torch::Tensor B_pack
         {static_cast<int64_t>(workspace_bytes)}, torch::TensorOptions().dtype(torch::kUInt8).device(A_tensor.device()));
     char* workspace_ptr = workspace_bytes > 0 ? reinterpret_cast<char*>(workspace_tensor.data_ptr()) : nullptr;
 
-    // --- CUDA Stream ---
     cudaStream_t stream = at::cuda::getCurrentCUDAStream(A_tensor.device().index());
+
+    // Synchronize device before attempting to read tensor data on CPU for printing.
+    // This helps ensure that any preceding CUDA operations (like runner setup, workspace allocation)
+    // are complete and memory is in a consistent state, which might be necessary if
+    // A_ptr becomes inaccessible after those operations due to async execution or context issues.
+    std::cout << "[DEBUG] w4a16_gemm_thop: Attempting cudaDeviceSynchronize() before printing tensor contents."
+              << std::endl;
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess)
+    {
+        std::cerr << "[ERROR] cudaDeviceSynchronize failed in w4a16_gemm_thop: " << cudaGetErrorString(err) << " ("
+                  << __FILE__ << ":" << __LINE__ << ")" << std::endl;
+        throw std::runtime_error(
+            std::string("[CUDA Error] w4a16_gemm_thop: cudaDeviceSynchronize failed: ") + cudaGetErrorString(err));
+    }
+    std::cout << "[DEBUG] w4a16_gemm_thop: cudaDeviceSynchronize() completed." << std::endl;
+
+    // --- Print Tensor Contents (Debug) ---
+    std::cout << "[DEBUG] w4a16_gemm_thop - Tensor contents before runner.gemm call:" << std::endl;
+
+    // --- Detailed A_tensor check before attempting to print its data ---
+    std::cout << "[DEBUG] Pre-Print A_tensor metadata:" << std::endl;
+    std::cout << "  A_tensor.defined(): " << A_tensor.defined() << std::endl;
+    if (A_tensor.defined())
+    {
+        std::cout << "  A_tensor.is_cuda(): " << A_tensor.is_cuda() << std::endl;
+        std::cout << "  A_tensor.is_contiguous(): " << A_tensor.is_contiguous() << std::endl;
+        std::cout << "  A_tensor.numel(): " << A_tensor.numel() << std::endl;
+        std::cout << "  A_tensor.dim(): " << A_tensor.dim() << std::endl;
+        for (int d = 0; d < A_tensor.dim(); ++d)
+        {
+            std::cout << "    A_tensor.size(" << d << "): " << A_tensor.size(d) << std::endl;
+        }
+        std::cout << "  Calculated M (for print loop): " << M << std::endl;
+        std::cout << "  Calculated K_act (for print loop): " << K_act << std::endl;
+        std::cout << "  A_ptr (re-checked address): " << A_tensor.data_ptr() << std::endl; // Get current data_ptr
+    }
+    else
+    {
+        std::cout << "  A_tensor is NOT defined!" << std::endl;
+    }
+    // --- End Detailed A_tensor check ---
+
+    // Print A_tensor (Activation)
+    if (A_ptr && A_tensor.defined() && A_tensor.numel() > 0)
+    { // Added A_tensor.defined() and numel check
+        std::cout << "  A_tensor (first 2 rows, up to 5 elements each, copied to CPU for printing):" << std::endl;
+
+        int rows_to_print_a = std::min(2, M);
+        int cols_to_print_a = std::min(5, K_act);
+        size_t elements_to_copy_a = static_cast<size_t>(rows_to_print_a) * K_act; // Copy full relevant rows
+        size_t bytes_to_copy_a = elements_to_copy_a * sizeof(ActivationT);
+
+        if (elements_to_copy_a > 0 && bytes_to_copy_a <= A_tensor.numel() * sizeof(ActivationT))
+        {
+            std::vector<ActivationT> a_cpu_buffer(elements_to_copy_a);
+            std::cout << "[DEBUG] Attempting cudaMemcpy for A_tensor: " << bytes_to_copy_a << " bytes." << std::endl;
+            cudaError_t memcpy_err_a = cudaMemcpy(a_cpu_buffer.data(), A_ptr, bytes_to_copy_a, cudaMemcpyDeviceToHost);
+            if (memcpy_err_a != cudaSuccess)
+            {
+                std::cerr << "[ERROR] cudaMemcpy DtoH for A_tensor failed: " << cudaGetErrorString(memcpy_err_a)
+                          << std::endl;
+            }
+            else
+            {
+                std::cout << "[DEBUG] cudaMemcpy for A_tensor successful." << std::endl;
+                for (int i = 0; i < rows_to_print_a; ++i)
+                {
+                    std::cout << "    Row " << i << ": ";
+                    for (int j = 0; j < cols_to_print_a; ++j)
+                    {
+                        // Access data from the CPU buffer
+                        std::cout << static_cast<float>(a_cpu_buffer[i * K_act + j]) << " ";
+                    }
+                    std::cout << std::endl;
+                }
+            }
+        }
+        else
+        {
+            std::cout << "[DEBUG] Skipping A_tensor print due to zero elements to copy or invalid copy size."
+                      << std::endl;
+            std::cout << "  elements_to_copy_a: " << elements_to_copy_a << ", bytes_to_copy_a: " << bytes_to_copy_a
+                      << std::endl;
+            std::cout << "  A_tensor.numel() * sizeof(ActivationT): " << A_tensor.numel() * sizeof(ActivationT)
+                      << std::endl;
+        }
+    }
+
+    // Print B_packed_tensor (Weights)
+    if (B_packed_ptr && B_packed_tensor.defined() && B_packed_tensor.numel() > 0)
+    {
+        // WeightPackedT* B_packed_data = static_cast<WeightPackedT*>(B_packed_ptr);
+        std::cout << "  B_packed_tensor (first 2 rows, up to 5 elements each, copied to CPU for printing):"
+                  << std::endl;
+
+        int rows_to_print_b = std::min(2, K_weights);
+        int cols_to_print_b = std::min(5, N_packed_int4);
+        size_t elements_to_copy_b = static_cast<size_t>(rows_to_print_b) * N_packed_int4; // Copy full relevant rows
+        size_t bytes_to_copy_b = elements_to_copy_b * sizeof(WeightPackedT);
+
+        if (elements_to_copy_b > 0 && bytes_to_copy_b <= B_packed_tensor.numel() * sizeof(WeightPackedT))
+        {
+            std::vector<WeightPackedT> b_cpu_buffer(elements_to_copy_b);
+            std::cout << "[DEBUG] Attempting cudaMemcpy for B_packed_tensor: " << bytes_to_copy_b << " bytes."
+                      << std::endl;
+            cudaError_t memcpy_err_b
+                = cudaMemcpy(b_cpu_buffer.data(), B_packed_ptr, bytes_to_copy_b, cudaMemcpyDeviceToHost);
+
+            if (memcpy_err_b != cudaSuccess)
+            {
+                std::cerr << "[ERROR] cudaMemcpy DtoH for B_packed_tensor failed: " << cudaGetErrorString(memcpy_err_b)
+                          << std::endl;
+            }
+            else
+            {
+                std::cout << "[DEBUG] cudaMemcpy for B_packed_tensor successful." << std::endl;
+                // B_packed_tensor shape: [K_weights, N_packed_int4]
+                for (int i = 0; i < rows_to_print_b; ++i)
+                {
+                    std::cout << "    Row " << i << ": ";
+                    for (int j = 0; j < cols_to_print_b; ++j)
+                    {
+                        std::cout << static_cast<int>(b_cpu_buffer[i * N_packed_int4 + j]) << " ";
+                    }
+                    std::cout << std::endl;
+                }
+            }
+        }
+        else
+        {
+            std::cout << "[DEBUG] Skipping B_packed_tensor print due to zero elements to copy or invalid copy size."
+                      << std::endl;
+            std::cout << "  elements_to_copy_b: " << elements_to_copy_b << ", bytes_to_copy_b: " << bytes_to_copy_b
+                      << std::endl;
+            std::cout << "  B_packed_tensor.numel() * sizeof(WeightPackedT): "
+                      << B_packed_tensor.numel() * sizeof(WeightPackedT) << std::endl;
+        }
+    }
+
+    // Print scales_tensor
+    if (scales_ptr && scales_tensor.defined() && scales_tensor.numel() > 0)
+    {
+        // ScaleT* scales_data = static_cast<ScaleT*>(scales_ptr);
+        std::cout << "  scales_tensor (first 2 rows, up to 5 elements each, copied to CPU for printing):" << std::endl;
+        // scales_tensor shape: [total_groups, N_orig]
+        int total_groups_calc = (K + group_size - 1) / group_size; // Calculate total_groups for loop bound
+
+        int rows_to_print_s = std::min(2, total_groups_calc);
+        int cols_to_print_s = std::min(5, N_orig);
+        size_t elements_to_copy_s = static_cast<size_t>(rows_to_print_s) * N_orig; // Copy full relevant rows
+        size_t bytes_to_copy_s = elements_to_copy_s * sizeof(ScaleT);
+
+        if (elements_to_copy_s > 0 && bytes_to_copy_s <= scales_tensor.numel() * sizeof(ScaleT))
+        {
+            std::vector<ScaleT> s_cpu_buffer(elements_to_copy_s);
+            std::cout << "[DEBUG] Attempting cudaMemcpy for scales_tensor: " << bytes_to_copy_s << " bytes."
+                      << std::endl;
+            cudaError_t memcpy_err_s
+                = cudaMemcpy(s_cpu_buffer.data(), scales_ptr, bytes_to_copy_s, cudaMemcpyDeviceToHost);
+
+            if (memcpy_err_s != cudaSuccess)
+            {
+                std::cerr << "[ERROR] cudaMemcpy DtoH for scales_tensor failed: " << cudaGetErrorString(memcpy_err_s)
+                          << std::endl;
+            }
+            else
+            {
+                std::cout << "[DEBUG] cudaMemcpy for scales_tensor successful." << std::endl;
+                for (int i = 0; i < rows_to_print_s; ++i)
+                {
+                    std::cout << "    Row " << i << ": ";
+                    for (int j = 0; j < cols_to_print_s; ++j)
+                    {
+                        std::cout << static_cast<float>(s_cpu_buffer[i * N_orig + j]) << " ";
+                    }
+                    std::cout << std::endl;
+                }
+            }
+        }
+        else
+        {
+            std::cout << "[DEBUG] Skipping scales_tensor print due to zero elements to copy or invalid copy size."
+                      << std::endl;
+            std::cout << "  elements_to_copy_s: " << elements_to_copy_s << ", bytes_to_copy_s: " << bytes_to_copy_s
+                      << std::endl;
+            std::cout << "  scales_tensor.numel() * sizeof(ScaleT): " << scales_tensor.numel() * sizeof(ScaleT)
+                      << std::endl;
+        }
+    }
+
+    // Print bias_tensor
+    if (bias_ptr && bias_tensor.defined() && bias_tensor.numel() > 0)
+    { // bias_ptr is nullptr if bias_tensor is not defined or empty
+        // BiasT* bias_data = static_cast<BiasT*>(bias_ptr);
+        std::cout << "  bias_tensor (first 1 row, up to 5 elements, copied to CPU for printing):" << std::endl;
+
+        int cols_to_print_bias = std::min(5, N_orig); // N_orig is the width of bias
+        size_t elements_to_copy_bias = static_cast<size_t>(cols_to_print_bias);
+        size_t bytes_to_copy_bias = elements_to_copy_bias * sizeof(BiasT);
+
+        if (elements_to_copy_bias > 0 && bytes_to_copy_bias <= bias_tensor.numel() * sizeof(BiasT))
+        {
+            std::vector<BiasT> bias_cpu_buffer(elements_to_copy_bias);
+            std::cout << "[DEBUG] Attempting cudaMemcpy for bias_tensor: " << bytes_to_copy_bias << " bytes."
+                      << std::endl;
+            cudaError_t memcpy_err_bias
+                = cudaMemcpy(bias_cpu_buffer.data(), bias_ptr, bytes_to_copy_bias, cudaMemcpyDeviceToHost);
+
+            if (memcpy_err_bias != cudaSuccess)
+            {
+                std::cerr << "[ERROR] cudaMemcpy DtoH for bias_tensor failed: " << cudaGetErrorString(memcpy_err_bias)
+                          << std::endl;
+            }
+            else
+            {
+                std::cout << "[DEBUG] cudaMemcpy for bias_tensor successful." << std::endl;
+                std::cout << "    Row 0: ";
+                for (int j = 0; j < cols_to_print_bias; ++j)
+                {
+                    std::cout << static_cast<float>(bias_cpu_buffer[j]) << " ";
+                }
+                std::cout << std::endl;
+            }
+        }
+        else
+        {
+            std::cout << "[DEBUG] Skipping bias_tensor print due to zero elements to copy or invalid copy size."
+                      << std::endl;
+            std::cout << "  elements_to_copy_bias: " << elements_to_copy_bias
+                      << ", bytes_to_copy_bias: " << bytes_to_copy_bias << std::endl;
+            std::cout << "  bias_tensor.numel() * sizeof(BiasT): " << bias_tensor.numel() * sizeof(BiasT) << std::endl;
+        }
+    }
+    else
+    {
+        std::cout << "  bias_tensor: Not provided or empty." << std::endl;
+    }
 
     // --- Execute GEMM ---
     // Pass nullptr explicitly for the zeros argument, matching the FINEGRAINED_SCALE_ONLY QuantMode
     runner.gemm(A_ptr, B_packed_ptr, scales_ptr,
-        nullptr, // Explicitly pass nullptr for zeros
+        nullptr, // NOTE: zeros is not used for this QuantMode
         bias_ptr,
         1.0f,    // Alpha
         C_ptr, M, N_orig, K, group_size, gemm_config_to_run, workspace_ptr, workspace_bytes, stream);
