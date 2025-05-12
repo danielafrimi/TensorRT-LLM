@@ -99,6 +99,26 @@ def load_weight_scales_fp8_qdq(weights: List[Dict]):
     return input_scale, weight_scale
 
 
+def load_weight_scales_w4a16_bla(weights: List[Dict]):
+    weight_scale = []
+    for w in weights:
+        if "weight_scale" in w:
+            weight_scale.append(w["weight_scale"])
+    return weight_scale
+
+
+def load_weight_scales_w4a16(weights):
+    q_weight_scale = weights[0]['weight_scale']
+    k_weight_scale = weights[1]['weight_scale']
+    v_weight_scale = weights[2]['weight_scale']
+    weight_scales = [q_weight_scale, k_weight_scale, v_weight_scale]
+
+    k_scale = weights[1].get('k_scale', None)
+    v_scale = weights[2].get('v_scale', None)
+
+    return weight_scales, k_scale, v_scale
+
+
 def load_weight_scales_nvfp4(weights: List[Dict],
                              tp_size: int = 1,
                              tp_rank: int = 0,
@@ -301,15 +321,15 @@ class Linear(nn.Module):
                 # Weights are INT4, packed into uint8 (2x INT4 per byte)
                 # Shape: (out_features, in_features / 2)
                 self.weight = Parameter(
-                    torch.empty(
-                        (self.out_features, self.in_features // 2),
-                        dtype=torch.
-                        uint8,  # Matches typical checkpoint format for packed INT4
-                        device=device),
-                    requires_grad=False)
+                    torch.empty((self.out_features // 2, self.in_features),
+                                dtype=torch.uint8,
+                                device=device),
+                    requires_grad=False
+                )  # todo maybe it needs to be Transpose ?
 
                 # Scales are per-group and per-output-channel
                 group_size = qc.group_size
+                print(f"group_size is {group_size}")
                 if self.in_features % group_size != 0:
                     # This case should ideally be handled by padding during weight preparation
                     # or caught by an earlier assertion.
@@ -319,26 +339,25 @@ class Linear(nn.Module):
                         f"for INT4 per-group quantization scale dimensions.")
 
                 # Shape: (out_features, in_features / group_size)
-                self.weight_scale = Parameter(
-                    torch.empty(
-                        (self.out_features, self.in_features // group_size),
-                        dtype=torch.float16,  # Scales are typically float16
-                        device=device),
-                    requires_grad=False)
+                self.weight_scale = Parameter(torch.empty(
+                    (self.out_features, self.in_features // group_size),
+                    dtype=torch.float32,
+                    device=device),
+                                              requires_grad=False)
 
                 self.pre_quant_scale = Parameter(torch.empty(
                     (self.in_features, ), dtype=torch.float16, device=device),
                                                  requires_grad=False)
 
-                # AWQ INT4 weights typically do not have zero-points.
-                # If quant_config.has_zero_point were true, you would define self.zeros here,
-                # similar to self.weight_scale, possibly packed if zeros are also INT4.
-                # For example:
-                # self.zeros = Parameter(torch.empty(
-                #    (self.out_features, self.in_features // group_size // 2), # Packed INT4 zeros
-                #    dtype=torch.uint8,
-                #    device=device), requires_grad=False)
+                self.k_scale = Parameter(torch.empty((),
+                                                     dtype=torch.float32,
+                                                     device=device),
+                                         requires_grad=False)
 
+                self.v_scale = Parameter(torch.empty((),
+                                                     dtype=torch.float32,
+                                                     device=device),
+                                         requires_grad=False)
             else:
                 # TODO(zhenhuanc): support other quant mode
                 raise ValueError(f'unsupported quant mode: {qc.quant_mode}')
@@ -404,8 +423,8 @@ class Linear(nn.Module):
                 if bias is not None:
                     output = output + bias
             elif self.has_w4a16_awq:
+                print
                 # todo add here more
-                pass
             else:
                 # TODO(zhenhuanc): support other quant mode
                 raise ValueError(f'unsupported quant mode: {qc.quant_mode}')
@@ -527,6 +546,15 @@ class Linear(nn.Module):
                     if "input_scale" in weights[0]:
                         _copy(self.input_scale, weights[0]["input_scale"])
                         self.inv_input_scale.data = 1.0 / self.input_scale
+                elif quant_mode.is_int4_weight_only_per_group():
+                    pre_quant_scale = load_weight_shard(
+                        weights[0]['pre_quant_scale'], self.tp_size,
+                        self.tp_rank, self.tp_mode, device)
+                    weight_scale = load_weight_shard(weights[0]['weight_scale'],
+                                                     self.tp_size, self.tp_rank,
+                                                     self.tp_mode, device)
+                    _copy(self.pre_quant_scale, pre_quant_scale)
+                    _copy(self.weight_scale, weight_scale)
 
         elif weight_mode == WeightMode.FUSED_QKV_LINEAR:
             assert len(weights) == 3
@@ -577,22 +605,14 @@ class Linear(nn.Module):
                         (q_scale, k_scale, v_scale))
                     _copy(self.weight_scale, fused_fp8_block_scale)
                 elif quant_mode.is_int4_weight_only_per_group():
-                    # Load individual Q, K, V parts
-                    print("im here")
-                    print(f"weights[0]['weight'] is {weights[0]['weight']}")
-                    print(
-                        f"weights[1]['weight'].shape is {weights[1]['weight'].shape}"
-                    )
-                    # For AWQ, these might be uint8 but with K-dim not yet halved.
-                    raw_q_weight = load_weight_shard(weights[0]['weight'],
-                                                     self.tp_size, self.tp_rank,
-                                                     self.tp_mode, device)
-                    raw_k_weight = load_weight_shard(weights[1]['weight'],
-                                                     self.tp_size, self.tp_rank,
-                                                     self.tp_mode, device)
-                    raw_v_weight = load_weight_shard(weights[2]['weight'],
-                                                     self.tp_size, self.tp_rank,
-                                                     self.tp_mode, device)
+                    weight_scales, k_scale, v_scale = load_weight_scales_w4a16(
+                        weights)
+
+                    # Create concatenated weight scale tensor
+                    cat_weight_scale = torch.cat(weight_scales, dim=0)
+                    _copy(self.weight_scale, cat_weight_scale)
+                    _copy(self.k_scale, k_scale)
+                    _copy(self.v_scale, v_scale)
 
             fused_weight = torch.cat((q_weight, k_weight, v_weight))
 
@@ -611,6 +631,7 @@ class Linear(nn.Module):
                                            self.tp_rank, self.tp_mode, device)
                 _copy(self.bias, torch.cat((q_bias, k_bias, v_bias)))
         elif weight_mode == WeightMode.FUSED_GATE_UP_LINEAR:
+            print("im here weight mode is fused gate up linear")
             assert len(weights) == 2
 
             gate_weight = load_weight_shard(weights[0]['weight'], self.tp_size,
@@ -646,6 +667,16 @@ class Linear(nn.Module):
                                                    self.tp_size, self.tp_rank,
                                                    self.tp_mode, device)
                     right_scale = load_weight_shard(weights[1][scale_name],
+                                                    self.tp_size, self.tp_rank,
+                                                    self.tp_mode, device)
+                    fused_scale = torch.cat([left_scale, right_scale], dim=0)
+                    _copy(self.weight_scale, fused_scale)
+
+                elif quant_mode.is_int4_weight_only_per_group():
+                    left_scale = load_weight_shard(weights[0]['weight_scale'],
+                                                   self.tp_size, self.tp_rank,
+                                                   self.tp_mode, device)
+                    right_scale = load_weight_shard(weights[0]['weight_scale'],
                                                     self.tp_size, self.tp_rank,
                                                     self.tp_mode, device)
                     fused_scale = torch.cat([left_scale, right_scale], dim=0)
