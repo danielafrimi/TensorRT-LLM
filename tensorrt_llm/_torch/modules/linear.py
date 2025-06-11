@@ -656,7 +656,7 @@ class W4A16_AWQ_LinearMethod(LinearMethodBase):
                 f"for INT4 per-group quantization scale dimensions.")
 
         module.weight_scale = Parameter(torch.empty(
-            (out_features, in_features // group_size), dtype=torch.float16),
+            (out_features, in_features // group_size), dtype=dtype),
                                         requires_grad=False)
         # NOTE: Not in all linear we have this tensor - pre_quant_scale is computed as an average and merged with the
         # LayerNorm for QKV and Gate/Up projection layers when possible. we can see the tensor only for o_proj and down_proj
@@ -676,15 +676,14 @@ class W4A16_AWQ_LinearMethod(LinearMethodBase):
 
         bias = bias.contiguous() if bias is not None else None
 
-        output = torch.ops.trtllm.w4a16_gemm(
-            input.contiguous(),
-            module.weight,
-            module.weight_scale.T.contiguous(
-            ),  # TODO: needs to cast to fp16/bf16 in order to make the kernel run
-            module.quant_config.group_size,
-            module.quant_config.has_zero_point,
-            bias,
-            zeros=None)
+        output = torch.ops.trtllm.w4a16_gemm(input.to(
+            module.dtype).contiguous(),
+                                             module.weight,
+                                             module.weight_scale.T.contiguous(),
+                                             module.quant_config.group_size,
+                                             module.quant_config.has_zero_point,
+                                             bias,
+                                             zeros=None)
         return output
 
     def load_weight_scales(self,
@@ -719,14 +718,14 @@ class W4A16_AWQ_LinearMethod(LinearMethodBase):
         pre_quant_scale = load_weight_shard(weights[0]['pre_quant_scale'],
                                             module.tp_size, module.tp_rank,
                                             module.tp_mode, device)
+
         module.pre_quant_scale = Parameter(
-            torch.ones((module.in_features, ), dtype=torch.float16),
+            torch.ones((module.in_features, ), dtype=pre_quant_scale.dtype),
             requires_grad=False).to(device=device)
 
         weight_scale = load_weight_shard(weights[0]['weight_scale'],
                                          module.tp_size, module.tp_rank,
-                                         module.tp_mode,
-                                         device).to(torch.float16)
+                                         module.tp_mode, device)
 
         copy_weight(module.pre_quant_scale, pre_quant_scale)
         copy_weight(module.weight_scale, weight_scale)
@@ -768,8 +767,9 @@ class W4A16_AWQ_LinearMethod(LinearMethodBase):
         right_scale = load_weight_shard(weights[0]['weight_scale'],
                                         module.tp_size, module.tp_rank,
                                         module.tp_mode, device).contiguous()
+
         fused_scale = torch.cat([left_scale, right_scale],
-                                dim=0).to(torch.float16)
+                                dim=0).to(module.dtype)
         copy_weight(module.weight_scale, fused_scale)
 
 
