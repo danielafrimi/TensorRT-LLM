@@ -553,7 +553,7 @@ def _(
 
 
 class W4A16GemmRunner(TunableRunner):
-    _runner_dict: Dict[str, torch.classes.trtllm.W4A16GemmRunner] = dict()
+    _runner_dict = dict()
 
     def __init__(self, activation_dtype: torch.dtype, quant_mode: int):
         instance_key = (activation_dtype, quant_mode)
@@ -566,6 +566,7 @@ class W4A16GemmRunner(TunableRunner):
     def get_valid_tactics(
         self,
         inputs: List[torch.Tensor],
+        profile: OptimizationProfile,
     ) -> List[int]:
         return list(range(self._w4a16_gemm_runner.get_num_configs()))
 
@@ -601,10 +602,10 @@ def w4a16_gemm(input: torch.Tensor,
 
     tuner = AutoTuner.get()
 
-    tuning_config = TuningConfig(dynamic_tensors=(
+    tuning_config = TuningConfig(dynamic_tensor_specs=(
         # For tensor index 0 (input A), tune dimension 0 (M dimension)
-        (0, 0, ((8192, 4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1),
-                next_positive_power_of_2)), ))
+        DynamicTensorSpec(0, 0, (8192, 4096, 2048, 1024, 512, 256, 128, 64, 32,
+                                 16, 8, 4, 2, 1), last_positive_power_of_2), ))
 
     quant_mode = 1 if has_zero_point else 0
     w4a16_gemm_runner = W4A16GemmRunner(input.dtype, quant_mode)
