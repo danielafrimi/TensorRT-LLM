@@ -535,7 +535,8 @@ class NVFP4LinearMethod(LinearMethodBase):
             output = output + bias
         return output
 
-    def load_weight_scales(weights: List[Dict],
+    def load_weight_scales(self,
+                           weights: List[Dict],
                            tp_size: int = 1,
                            tp_rank: int = 0,
                            tp_mode: Optional[TensorParallelMode] = None):
@@ -655,6 +656,7 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
                 f"in_features ({self.in_features}) must be divisible by group_size ({group_size}) "
                 f"for INT4 per-group quantization scale dimensions.")
 
+        print(f"module.weight_scale: {module.weight_scale}")
         module.weight_scale = Parameter(torch.empty(
             (out_features, in_features // group_size), dtype=dtype),
                                         requires_grad=False)
@@ -686,7 +688,7 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
         quantized_input = input
         if input.dtype != torch.float8_e4m3fn:
             quantized_input, _ = torch.ops.tensorrt_llm.static_quantize_e4m3_per_tensor(
-                input, self.input_scale)
+                input, module.input_scale)
         bias = bias.contiguous() if bias is not None else None
 
         output = torch.ops.trtllm.finegrained_mixed_dtype_gemm(
@@ -695,15 +697,16 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
             module.weight_scale.T.contiguous(),
             module.quant_config.group_size,
             module.quant_config.has_zero_point,
-            output_dtype=self.dtype
+            output_dtype=module.dtype
             or input.dtype,  # NOTE: output_dtype can only be bf16/fp16
-            alpha=self.alpha.item(),
+            alpha=module.alpha.item(),
             bias=bias,
             zeros=None)
 
         return output
 
-    def load_weight_scales_w4a8(weights: List[Dict],
+    def load_weight_scales_w4a8(self,
+                                weights: List[Dict],
                                 tp_size: int = 1,
                                 tp_rank: int = 0,
                                 tp_mode: Optional[TensorParallelMode] = None):
@@ -748,31 +751,6 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
 
         return input_scale, weight_scale, alpha
 
-    def load_weight_scales(self,
-                           weights: List[Dict],
-                           tp_size: int = 1,
-                           tp_rank: int = 0,
-                           tp_mode: Optional[TensorParallelMode] = None):
-        device = torch.device("cuda")
-        q_weight_scale = load_weight_shard(weights[0]['weight_scale'],
-                                           tp_size,
-                                           tp_rank,
-                                           tp_mode,
-                                           device=device)
-        k_weight_scale = load_weight_shard(weights[1]['weight_scale'],
-                                           tp_size,
-                                           tp_rank,
-                                           tp_mode,
-                                           device=device)
-        v_weight_scale = load_weight_shard(weights[2]['weight_scale'],
-                                           tp_size,
-                                           tp_rank,
-                                           tp_mode,
-                                           device=device)
-        weight_scales = [q_weight_scale, k_weight_scale, v_weight_scale]
-
-        return weight_scales
-
     def load_weights_vanilla(self, module: Linear, weights: List[Dict]):
         load_weights_vanilla_helper(module, weights)
 
@@ -787,15 +765,10 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
 
         input_scale, weight_scale, alpha = self.load_weight_scales_w4a8(
             weights=weights,
-            tp_size=self.tp_size,
-            tp_rank=self.tp_rank,
-            tp_mode=self.tp_mode)
+            tp_size=module.tp_size,
+            tp_rank=module.tp_rank,
+            tp_mode=module.tp_mode)
 
-        # weight_scale = load_weight_shard(weights[0]['weight_scale'],
-        #                                  module.tp_size, module.tp_rank,
-        #                                  module.tp_mode, device)
-
-        assert len(weights) == 1
         copy_weight(module.pre_quant_scale, pre_quant_scale)
         copy_weight(module.weight_scale, weight_scale[0])
         copy_weight(module.input_scale, input_scale)
@@ -815,15 +788,15 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
 
         copy_weight(module.weight, fused_weight)
 
-        input_scale, weight_scale, alpha = self.load_weight_scales_w4a8(
+        input_scale, weight_scales, alpha = self.load_weight_scales_w4a8(
             weights=weights,
-            tp_size=self.tp_size,
-            tp_rank=self.tp_rank,
-            tp_mode=self.tp_mode)
+            tp_size=module.tp_size,
+            tp_rank=module.tp_rank,
+            tp_mode=module.tp_mode)
 
         # Create concatenated weight scale tensor
-        cat_weight_scale = torch.cat(weight_scale, dim=0)
-        copy_weight(module.weight_scale, cat_weight_scale)
+        weight_scale = torch.cat(weight_scales, dim=0)
+        copy_weight(module.weight_scale, weight_scale)
         copy_weight(module.input_scale, input_scale)
         copy_weight(module.alpha, alpha)
 
@@ -839,18 +812,11 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
 
         copy_weight(module.weight, fused_weight)
 
-        # left_scale = load_weight_shard(weights[0]['weight_scale'],
-        #                                module.tp_size, module.tp_rank,
-        #                                module.tp_mode, device).contiguous()
-        # right_scale = load_weight_shard(weights[0]['weight_scale'],
-        #                                 module.tp_size, module.tp_rank,
-        #                                 module.tp_mode, device).contiguous()
-
         input_scale, weight_scale, alpha = self.load_weight_scales_w4a8(
             weights=weights,
-            tp_size=self.tp_size,
-            tp_rank=self.tp_rank,
-            tp_mode=self.tp_mode)
+            tp_size=module.tp_size,
+            tp_rank=module.tp_rank,
+            tp_mode=module.tp_mode)
 
         fused_scale = torch.cat(weight_scale, dim=0).to(module.dtype)
         copy_weight(module.weight_scale, fused_scale)

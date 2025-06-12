@@ -26,10 +26,10 @@ def main():
     ]
     sampling_params = SamplingParams(max_tokens=32)
     # w4a16
-    llm = LLM(model=Path('/dafrimi/nvila_quant/NVILA-Lite-8B-INT4/llm'))
+    # llm = LLM(model=Path('/dafrimi/nvila_quant/NVILA-Lite-8B-INT4/llm'))
     # llm = LLM(model=Path('/dafrimi/Llama-3.1-8B-Instruct_w4a16'))
     #w4a8
-    # llm = LLM(model=Path('/dafrimi/projects/Llama-3.1-8B-Instruct_w4a8'))
+    llm = LLM(model=Path('/dafrimi/Llama-3.1-8B-Instruct_w4a8'))
     outputs = llm.generate(prompts, sampling_params)
 
     for i, output in enumerate(outputs):
