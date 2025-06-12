@@ -125,22 +125,25 @@ class Gemma3MLP(nn.Module):
     def __init__(self, config: Gemma3TextConfig):
         super().__init__()
         self.config = config
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
-        self.dtype = config.torch_dtype
+        self.hidden_size = config.pretrained_config.hidden_size
+        self.intermediate_size = config.pretrained_config.intermediate_size
+        self.dtype = config.pretrained_config.torch_dtype
         self.gate_proj = Linear(self.hidden_size,
                                 self.intermediate_size,
                                 bias=False,
-                                dtype=self.dtype)
+                                dtype=self.dtype,
+                                quant_config=config.quant_config)
         self.up_proj = Linear(self.hidden_size,
                               self.intermediate_size,
                               bias=False,
-                              dtype=self.dtype)
+                              dtype=self.dtype,
+                              quant_config=config.quant_config)
         self.down_proj = Linear(self.intermediate_size,
                                 self.hidden_size,
                                 bias=False,
-                                dtype=self.dtype)
-        self.act_fn = ACT2FN[config.hidden_activation]
+                                dtype=self.dtype,
+                                quant_config=config.quant_config)
+        self.act_fn = ACT2FN[config.pretrained_config.hidden_activation]
 
     def forward(self, x):
         down_proj = self.down_proj(
@@ -157,29 +160,33 @@ class Gemma3DecoderLayer(DecoderLayer):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         super().__init__()
         self.layer_idx = layer_idx
-        config = model_config.pretrained_config
-        is_sliding = bool((layer_idx + 1) % config.sliding_window_pattern)
+        pretrained_config = model_config.pretrained_config
+        is_sliding = bool(
+            (layer_idx + 1) % pretrained_config.sliding_window_pattern)
         self.self_attn = Gemma3Attention(
             model_config,
             layer_idx=layer_idx,
             is_sliding=is_sliding,
         )
 
-        self.mlp = Gemma3MLP(config)
+        self.mlp = Gemma3MLP(model_config)
 
-        self.input_layernorm = RMSNorm(hidden_size=config.hidden_size,
-                                       eps=config.rms_norm_eps,
-                                       dtype=config.torch_dtype)
-        self.post_attention_layernorm = RMSNorm(hidden_size=config.hidden_size,
-                                                eps=config.rms_norm_eps,
-                                                dtype=config.torch_dtype)
-        self.pre_feedforward_layernorm = RMSNorm(hidden_size=config.hidden_size,
-                                                 eps=config.rms_norm_eps,
-                                                 dtype=config.torch_dtype)
+        self.input_layernorm = RMSNorm(
+            hidden_size=pretrained_config.hidden_size,
+            eps=pretrained_config.rms_norm_eps,
+            dtype=pretrained_config.torch_dtype)
+        self.post_attention_layernorm = RMSNorm(
+            hidden_size=pretrained_config.hidden_size,
+            eps=pretrained_config.rms_norm_eps,
+            dtype=pretrained_config.torch_dtype)
+        self.pre_feedforward_layernorm = RMSNorm(
+            hidden_size=pretrained_config.hidden_size,
+            eps=pretrained_config.rms_norm_eps,
+            dtype=pretrained_config.torch_dtype)
         self.post_feedforward_layernorm = RMSNorm(
-            hidden_size=config.hidden_size,
-            eps=config.rms_norm_eps,
-            dtype=config.torch_dtype)
+            hidden_size=pretrained_config.hidden_size,
+            eps=pretrained_config.rms_norm_eps,
+            dtype=pretrained_config.torch_dtype)
 
     def forward(
         self,
@@ -209,6 +216,26 @@ class Gemma3DecoderLayer(DecoderLayer):
         return hidden_states
 
 
+class Gemma3TextScaledWordEmbedding(nn.Embedding):
+    """
+    This module overrides nn.Embeddings' forward by multiplying with embeddings scale.
+    """
+
+    def __init__(self,
+                 num_embeddings: int,
+                 embedding_dim: int,
+                 padding_idx: int,
+                 embed_scale: float = 1.0):
+        super().__init__(num_embeddings, embedding_dim, padding_idx)
+        self.register_buffer("embed_scale",
+                             torch.tensor(embed_scale),
+                             persistent=False)
+
+    def forward(self, input_ids: torch.Tensor):
+        return super().forward(input_ids) * self.embed_scale.to(
+            self.weight.dtype)
+
+
 class Gemma3TextModel(DecoderModel):
 
     def __init__(self, model_config: ModelConfig[Gemma3TextConfig]):
@@ -216,6 +243,13 @@ class Gemma3TextModel(DecoderModel):
         config = self.model_config
         self.hidden_size = config.pretrained_config.hidden_size
         self.padding_idx = config.pretrained_config.pad_token_id
+
+        # self.embed_tokens = Gemma3TextScaledWordEmbedding(
+        #     config.pretrained_config.vocab_size,
+        #     config.pretrained_config.hidden_size,
+        #     self.padding_idx,
+        #     embed_scale=self.config.hidden_size**0.5
+        # )
 
         self.embed_tokens = Embedding(
             config.pretrained_config.vocab_size,
@@ -341,8 +375,8 @@ class Gemma3ForCausalLM(DecoderModelForCausalLM[Gemma3TextModel,
                                 duplicate_kv_weight(
                                     weight=v[:],
                                     head_dim=head_dim,
-                                    tensor_parallel_size=tp_size)
-                                if k in ["weight", "bias"] else v
+                                    tensor_parallel_size=tp_size,
+                                    factor=2) if k in ["weight", "bias"] else v
                                 for k, v in fw.items()
                             }
 
