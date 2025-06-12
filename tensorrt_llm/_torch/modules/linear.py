@@ -585,7 +585,6 @@ class NVFP4LinearMethod(LinearMethodBase):
             tp_rank=module.tp_rank,
             tp_mode=module.tp_mode)
 
-        assert len(weights) == 1
         weight_scale = weight_scale[0]
         # Swizzle weight scale
         weight_scale = torch.ops.tensorrt_llm.nvfp4_block_scale_interleave(
@@ -786,12 +785,23 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
             torch.ones((module.in_features, ), dtype=pre_quant_scale.dtype),
             requires_grad=False).to(device=device)
 
-        weight_scale = load_weight_shard(weights[0]['weight_scale'],
-                                         module.tp_size, module.tp_rank,
-                                         module.tp_mode, device)
+        input_scale, weight_scale, alpha = self.load_weight_scales_w4a8(
+            weights=weights,
+            tp_size=self.tp_size,
+            tp_rank=self.tp_rank,
+            tp_mode=self.tp_mode)
 
+        # weight_scale = load_weight_shard(weights[0]['weight_scale'],
+        #                                  module.tp_size, module.tp_rank,
+        #                                  module.tp_mode, device)
+
+        assert len(weights) == 1
         copy_weight(module.pre_quant_scale, pre_quant_scale)
-        copy_weight(module.weight_scale, weight_scale)
+        copy_weight(module.weight_scale, weight_scale[0])
+        copy_weight(module.input_scale, input_scale)
+        copy_weight(module.alpha, alpha)
+
+        module.inv_input_scale.data = 1.0 / module.input_scale
 
     def load_weights_fused_qkv_linear(self, module: Linear,
                                       weights: List[Dict]):
@@ -805,15 +815,20 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
 
         copy_weight(module.weight, fused_weight)
 
-        weight_scales = self.load_weight_scales(weights)
+        input_scale, weight_scale, alpha = self.load_weight_scales_w4a8(
+            weights=weights,
+            tp_size=self.tp_size,
+            tp_rank=self.tp_rank,
+            tp_mode=self.tp_mode)
 
         # Create concatenated weight scale tensor
-        cat_weight_scale = torch.cat(weight_scales, dim=0).to(torch.float16)
+        cat_weight_scale = torch.cat(weight_scale, dim=0)
         copy_weight(module.weight_scale, cat_weight_scale)
+        copy_weight(module.input_scale, input_scale)
+        copy_weight(module.alpha, alpha)
 
     def load_weights_fused_gate_up_linear(self, module: Linear,
                                           weights: List[Dict]):
-        device = torch.device('cuda')
         gate_weight, up_weight = load_weights_fused_gate_up_helper(
             module, weights)
 
@@ -824,16 +839,23 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
 
         copy_weight(module.weight, fused_weight)
 
-        left_scale = load_weight_shard(weights[0]['weight_scale'],
-                                       module.tp_size, module.tp_rank,
-                                       module.tp_mode, device).contiguous()
-        right_scale = load_weight_shard(weights[0]['weight_scale'],
-                                        module.tp_size, module.tp_rank,
-                                        module.tp_mode, device).contiguous()
+        # left_scale = load_weight_shard(weights[0]['weight_scale'],
+        #                                module.tp_size, module.tp_rank,
+        #                                module.tp_mode, device).contiguous()
+        # right_scale = load_weight_shard(weights[0]['weight_scale'],
+        #                                 module.tp_size, module.tp_rank,
+        #                                 module.tp_mode, device).contiguous()
 
-        fused_scale = torch.cat([left_scale, right_scale],
-                                dim=0).to(module.dtype)
+        input_scale, weight_scale, alpha = self.load_weight_scales_w4a8(
+            weights=weights,
+            tp_size=self.tp_size,
+            tp_rank=self.tp_rank,
+            tp_mode=self.tp_mode)
+
+        fused_scale = torch.cat(weight_scale, dim=0).to(module.dtype)
         copy_weight(module.weight_scale, fused_scale)
+        copy_weight(module.input_scale, input_scale)
+        copy_weight(module.alpha, alpha)
 
 
 class W4A16_AWQ_LinearMethod(LinearMethodBase):
@@ -965,7 +987,7 @@ class W4A16_AWQ_LinearMethod(LinearMethodBase):
         left_scale = load_weight_shard(weights[0]['weight_scale'],
                                        module.tp_size, module.tp_rank,
                                        module.tp_mode, device).contiguous()
-        right_scale = load_weight_shard(weights[0]['weight_scale'],
+        right_scale = load_weight_shard(weights[1]['weight_scale'],
                                         module.tp_size, module.tp_rank,
                                         module.tp_mode, device).contiguous()
 

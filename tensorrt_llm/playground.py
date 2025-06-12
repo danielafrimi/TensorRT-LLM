@@ -20,15 +20,14 @@ def main2():
 
 def main():
     prompts = [
-        "Hello, my name is",
-        "The president of the United States is",
-        "The capital of France is",
-        "The future of AI is",
+        "Hello, my name is", "The president of the United States is",
+        "The capital of France is", "The future of AI is",
+        "tell me a story about you"
     ]
     sampling_params = SamplingParams(max_tokens=32)
     # w4a16
-    # llm = LLM(model=Path('/dafrimi/projects/nvila_quant/NVILA-Lite-8B-INT4/llm'))
-    llm = LLM(model=Path('/dafrimi/projects/Llama-3.1-8B-Instruct_w4a16'))
+    llm = LLM(model=Path('/dafrimi/nvila_quant/NVILA-Lite-8B-INT4/llm'))
+    # llm = LLM(model=Path('/dafrimi/Llama-3.1-8B-Instruct_w4a16'))
     #w4a8
     # llm = LLM(model=Path('/dafrimi/projects/Llama-3.1-8B-Instruct_w4a8'))
     outputs = llm.generate(prompts, sampling_params)
