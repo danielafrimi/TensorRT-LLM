@@ -744,11 +744,11 @@ class PyTorchModelEngine(ModelEngine):
                         else:
                             logger.info(
                                 f"Run autotuning warmup for batch size={1}")
-                            self.forward(batch,
-                                         new_tensors_device=None,
-                                         resource_manager=resource_manager,
-                                         extra_model_inputs=extra_model_inputs)
-                            torch.cuda.synchronize()
+                            # self.forward(batch,
+                            #              new_tensors_device=None,
+                            #              resource_manager=resource_manager,
+                            #              extra_model_inputs=extra_model_inputs)
+                            # torch.cuda.synchronize()
 
                     logger.info(f"Autotuner Cache size after warmup " +
                                 str(len(AutoTuner.get().profiling_cache)))

@@ -397,16 +397,16 @@ class AutoTuner:
                         try:
                             time_measured = self._profile_single_kernel(
                                 r, tensors, tac, **kwargs)
-                        except Exception as e:
+                        except Exception:
                             # Handle None tensors for optional inputs
                             shapes = [
                                 t.size() if t is not None else torch.Size((0, ))
                                 for t in tensors
                             ]
 
-                            logger.error(
-                                f"[Autotuner]: Failed when profiling {r} {tac}, shapes={shapes}. Error occurred: {e}"
-                            )
+                            # logger.error(
+                            #     f"[Autotuner]: Failed when profiling {r} {tac}, shapes={shapes}. Error occurred: {e}"
+                            # )
 
                             # Record the failed profiling combinations
                             if custom_op not in self.stats.failed_profiling_count:
