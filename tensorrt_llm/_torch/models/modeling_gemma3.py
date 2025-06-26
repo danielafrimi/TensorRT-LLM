@@ -151,6 +151,30 @@ class Gemma3MLP(nn.Module):
         return down_proj
 
 
+class Gemma3RMSNorm(nn.Module):
+
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.zeros(dim))
+
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(self, x):
+        output = self._norm(x.float())
+        # Llama does x.to(float16) * w whilst Gemma3 is (x * w).to(float16)
+        # See https://github.com/huggingface/transformers/pull/29402
+        output = output * (1.0 + self.weight.float())
+        return output.type_as(x)
+
+    def extra_repr(self):
+        return f"{tuple(self.weight.shape)}, eps={self.eps}"
+
+    def load_weights(self, weights: Dict):
+        self.weight.data.copy_(weights[0]['weight'][:])
+
+
 class Gemma3DecoderLayer(DecoderLayer):
 
     def __init__(
@@ -171,10 +195,17 @@ class Gemma3DecoderLayer(DecoderLayer):
 
         self.mlp = Gemma3MLP(model_config)
 
-        self.input_layernorm = RMSNorm(
-            hidden_size=pretrained_config.hidden_size,
+        self.input_layernorm = Gemma3RMSNorm(
+            dim=pretrained_config.hidden_size,
             eps=pretrained_config.rms_norm_eps,
-            dtype=pretrained_config.torch_dtype)
+            # dtype=pretrained_config.torch_dtype
+        )
+
+        # self.input_layernorm = RMSNorm(
+        #     hidden_size=pretrained_config.hidden_size,
+        #     eps=pretrained_config.rms_norm_eps,
+        #     dtype=pretrained_config.torch_dtype)
+
         self.post_attention_layernorm = RMSNorm(
             hidden_size=pretrained_config.hidden_size,
             eps=pretrained_config.rms_norm_eps,
@@ -284,7 +315,10 @@ class Gemma3TextModel(DecoderModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
-            inputs_embeds = inputs_embeds * math.sqrt(self.hidden_size)
+            embedd_tensor = torch.tensor([math.sqrt(self.hidden_size)
+                                          ]).to(inputs_embeds.device)
+            inputs_embeds = inputs_embeds * embedd_tensor.to(
+                self.embed_tokens.weight.dtype)
 
         hidden_states = inputs_embeds.to(self.dtype)
 

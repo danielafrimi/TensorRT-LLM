@@ -754,15 +754,19 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
         load_weights_vanilla_helper(module, weights)
 
         device = torch.device('cuda')
-        pre_quant_scale = load_weight_shard(weights[0]['pre_quant_scale'],
-                                            module.tp_size, module.tp_rank,
-                                            module.tp_mode, device)
-        # print(f"load_weights_vanilla: pre_quant_scale dtype is {pre_quant_scale.dtype}")
-        # print(f"load_weights_vanilla: module dtype is {module.dtype}")
-        assert pre_quant_scale.dtype == module.dtype
-        module.pre_quant_scale = Parameter(
-            torch.empty((module.in_features, ), dtype=module.dtype),
-            requires_grad=False).to(device=device)
+        if "pre_quant_scale" in weights[0].keys():
+            print("there is pre quant scale in vanilla")
+            pre_quant_scale = load_weight_shard(weights[0]['pre_quant_scale'],
+                                                module.tp_size, module.tp_rank,
+                                                module.tp_mode, device)
+            # print(f"load_weights_vanilla: pre_quant_scale dtype is {pre_quant_scale.dtype}")
+            # print(f"load_weights_vanilla: module dtype is {module.dtype}")
+            assert pre_quant_scale.dtype == module.dtype
+            module.pre_quant_scale = Parameter(
+                torch.empty((module.in_features, ), dtype=module.dtype),
+                requires_grad=False).to(device=device)
+
+            copy_weight(module.pre_quant_scale, pre_quant_scale)
 
         input_scale, weight_scale, alpha = self.load_weight_scales_w4a8(
             weights=weights,
@@ -770,7 +774,6 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
             tp_rank=module.tp_rank,
             tp_mode=module.tp_mode)
 
-        copy_weight(module.pre_quant_scale, pre_quant_scale)
         copy_weight(module.weight_scale, weight_scale[0])
         copy_weight(module.input_scale, input_scale)
         copy_weight(module.alpha, alpha)
@@ -805,18 +808,20 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
         copy_weight(module.input_scale, input_scale)
         copy_weight(module.alpha, alpha)
 
-        pre_quant_scale = load_weight_shard(weights[0]['pre_quant_scale'],
-                                            module.tp_size,
-                                            module.tp_rank,
-                                            module.tp_mode,
-                                            device=torch.device('cuda'))
+        if "pre_quant_scale" in weights[0].keys():
+            print("there is pre quant scale in fused qkv linear")
+            pre_quant_scale = load_weight_shard(weights[0]['pre_quant_scale'],
+                                                module.tp_size,
+                                                module.tp_rank,
+                                                module.tp_mode,
+                                                device=torch.device('cuda'))
 
-        # NOTE:Create this tensor in load_weights, since not all layer have this tensor and memory is not allocated for it (same as W4A16)
-        module.pre_quant_scale = Parameter(
-            torch.ones((module.in_features, ), dtype=pre_quant_scale.dtype),
-            requires_grad=False).to(device=torch.device('cuda'))
+            # NOTE:Create this tensor in load_weights, since not all layer have this tensor and memory is not allocated for it (same as W4A16)
+            module.pre_quant_scale = Parameter(
+                torch.ones((module.in_features, ), dtype=pre_quant_scale.dtype),
+                requires_grad=False).to(device=torch.device('cuda'))
 
-        copy_weight(module.pre_quant_scale, pre_quant_scale)
+            copy_weight(module.pre_quant_scale, pre_quant_scale)
 
     def load_weights_fused_gate_up_linear(self, module: Linear,
                                           weights: List[Dict]):
@@ -845,18 +850,20 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
         copy_weight(module.input_scale, input_scale)
         copy_weight(module.alpha, alpha)
 
-        pre_quant_scale = load_weight_shard(weights[0]['pre_quant_scale'],
-                                            module.tp_size,
-                                            module.tp_rank,
-                                            module.tp_mode,
-                                            device=torch.device('cuda'))
+        if "pre_quant_scale" in weights[0].keys():
+            print("there is pre quant scale in fused gate up linear")
+            pre_quant_scale = load_weight_shard(weights[0]['pre_quant_scale'],
+                                                module.tp_size,
+                                                module.tp_rank,
+                                                module.tp_mode,
+                                                device=torch.device('cuda'))
 
-        # NOTE:Create this tensor in load_weights, since not all layer have this tensor and memory is not allocated for it (same as W4A16)
-        module.pre_quant_scale = Parameter(
-            torch.ones((module.in_features, ), dtype=pre_quant_scale.dtype),
-            requires_grad=False).to(device=torch.device('cuda'))
+            # NOTE:Create this tensor in load_weights, since not all layer have this tensor and memory is not allocated for it (same as W4A16)
+            module.pre_quant_scale = Parameter(
+                torch.ones((module.in_features, ), dtype=pre_quant_scale.dtype),
+                requires_grad=False).to(device=torch.device('cuda'))
 
-        copy_weight(module.pre_quant_scale, pre_quant_scale)
+            copy_weight(module.pre_quant_scale, pre_quant_scale)
 
 
 class W4A16_AWQ_LinearMethod(LinearMethodBase):
