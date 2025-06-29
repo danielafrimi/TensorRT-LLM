@@ -745,8 +745,8 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
         input_scale = input_scale
 
         # Compute scaling factor and alpha required by GEMM kernels
-        alpha = input_scale * weight_scale_2
-        # input_scale = 1.0 / input_scale
+        alpha = input_scale.float() * weight_scale_2.float()
+        input_scale = 1.0 / input_scale  # TODO if we set it like this the output is the same token at the end multiple times. when changing it we get garbase
 
         return input_scale, weight_scale, alpha
 
@@ -759,8 +759,7 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
             pre_quant_scale = load_weight_shard(weights[0]['pre_quant_scale'],
                                                 module.tp_size, module.tp_rank,
                                                 module.tp_mode, device)
-            # print(f"load_weights_vanilla: pre_quant_scale dtype is {pre_quant_scale.dtype}")
-            # print(f"load_weights_vanilla: module dtype is {module.dtype}")
+
             assert pre_quant_scale.dtype == module.dtype
             module.pre_quant_scale = Parameter(
                 torch.empty((module.in_features, ), dtype=module.dtype),
@@ -783,9 +782,6 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
     def load_weights_fused_qkv_linear(self, module: Linear,
                                       weights: List[Dict]):
 
-        # for w in weights:
-        #     if "pre_quant_scale" in w.keys():
-        #         print("there is pre quant scale in fused qkv linear")
         q_weight, k_weight, v_weight = load_weights_fused_qkv_helper(
             module, weights)
 
