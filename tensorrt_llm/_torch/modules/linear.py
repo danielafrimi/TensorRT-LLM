@@ -683,13 +683,13 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
     def apply(self, module: Linear, input: torch.Tensor,
               bias: Optional[torch.Tensor]):
         if module.pre_quant_scale is not None:
-            pre_quant_scale = module.pre_quant_scale.repeat(input.shape[0], 1)
-            input = torch.mul(input, pre_quant_scale)
+            input = input * module.pre_quant_scale
 
         quantized_input = input
         if input.dtype != torch.float8_e4m3fn:
             quantized_input, _ = torch.ops.tensorrt_llm.static_quantize_e4m3_per_tensor(
                 input, module.input_scale)
+
         bias = bias.contiguous() if bias is not None else None
 
         output = torch.ops.trtllm.finegrained_mixed_dtype_gemm(
@@ -751,6 +751,7 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
         return input_scale, weight_scale, alpha
 
     def load_weights_vanilla(self, module: Linear, weights: List[Dict]):
+        print(weights)
         load_weights_vanilla_helper(module, weights)
 
         device = torch.device('cuda')
@@ -785,11 +786,15 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
         q_weight, k_weight, v_weight = load_weights_fused_qkv_helper(
             module, weights)
 
-        fused_weight = torch.cat((q_weight, k_weight, v_weight))
-        fused_weight = preprocess_weights_for_mixed_gemm(
-            fused_weight.to(torch.int8).T.contiguous().cpu(), torch.quint4x2,
-            torch.float8_e4m3fn).cuda().contiguous()
+        # fused_weight = torch.cat((q_weight, k_weight, v_weight))
+        a = []
+        for i, weight in enumerate([q_weight, k_weight, v_weight]):
+            weight_ = preprocess_weights_for_mixed_gemm(
+                weight.to(torch.int8).T.contiguous().cpu(), torch.quint4x2,
+                torch.float8_e4m3fn).cuda().contiguous()
+            a.append(weight_)
 
+        fused_weight = torch.cat(a, dim=-1)
         copy_weight(module.weight, fused_weight)
 
         input_scale, weight_scales, alpha = self.load_weight_scales_w4a8(

@@ -20,7 +20,6 @@ from safetensors.torch import save_file
 
 
 class QuantizedModelModifier:
-    """Class to modify quantized parameters in a full model and run inference."""
 
     def __init__(self, model_path: str):
         self.model_path = Path(model_path)
@@ -81,145 +80,109 @@ class QuantizedModelModifier:
 
         return sorted(available_params)
 
-    def print_parameter_info(self, param_key: str):
-        """Print detailed information about a parameter."""
-        if param_key not in self.weights:
-            print(f"Parameter {param_key} not found!")
-            return
-
-        tensor = self.weights[param_key]
-        print(f"\nParameter: {param_key}")
-        print(f"  Shape: {tensor.shape}")
-        print(f"  Dtype: {tensor.dtype}")
-        print(f"  Device: {tensor.device}")
-
-        # Convert to float for statistics if needed
-        if tensor.dtype == torch.uint8:
-            tensor_float = tensor.float()
-            print(f"  (Converted to float for statistics)")
-        else:
-            tensor_float = tensor
-
-        print(f"  Mean: {tensor_float.mean():.6f}")
-        print(f"  Std: {tensor_float.std():.6f}")
-        print(f"  Min: {tensor_float.min():.6f}")
-        print(f"  Max: {tensor_float.max():.6f}")
-
-        # Print first few elements
-        flat_tensor = tensor.flatten()
-        if len(flat_tensor) <= 10:
-            print(f"  Values: {flat_tensor.tolist()}")
-        else:
-            print(f"  First 10 values: {flat_tensor[:10].tolist()}")
-
     def modify_parameter(self,
                          param_key: str,
                          modification_type: str,
                          value: Optional[float] = None,
-                         pattern: Optional[str] = None) -> torch.Tensor:
-        """
-        Modify a parameter in the model.
-
-        Args:
-            param_key: Key of the parameter to modify
-            modification_type: Type of modification ('set_value', 'scale', 'pattern')
-            value: Value to set or scale factor
-            pattern: Pattern for initialization ('ones', 'zeros', 'random', 'identity')
-
-        Returns:
-            Modified tensor
-        """
-        if param_key not in self.weights:
-            raise ValueError(f"Parameter {param_key} not found!")
+                         pattern: Optional[str] = None,
+                         scale: Optional[float] = None):
 
         original_tensor = self.weights[param_key]
-        is_uint8 = original_tensor.dtype == torch.uint8
-
-        # Convert to float for modification if needed
-        if is_uint8:
-            modified_tensor = original_tensor.float()
-            print(f"Converting uint8 tensor to float for modification")
-        else:
-            modified_tensor = original_tensor.clone()
+        original_dtype = original_tensor.dtype
+        original_device = original_tensor.device
 
         print(f"\nModifying parameter: {param_key}")
-        print(f"Original tensor shape: {original_tensor.shape}")
-        print(f"Modification type: {modification_type}")
+        print(f"Original shape: {original_tensor.shape}")
+        print(f"Original dtype: {original_dtype}")
 
-        if modification_type == 'set_value':
-            if value is None:
-                raise ValueError(
-                    "Value must be provided for 'set_value' modification")
-            modified_tensor.fill_(value)
-            print(f"Set all values to: {value}")
+        # Convert to float for modification
+        if original_dtype == torch.uint8:
+            tensor_float = original_tensor.float()
+            print("Converting uint8 tensor to float for modification")
+        else:
+            tensor_float = original_tensor.clone()
 
-        elif modification_type == 'scale':
-            if value is None:
-                raise ValueError(
-                    "Scale factor must be provided for 'scale' modification")
-            modified_tensor = modified_tensor * value
-            print(f"Scaled by factor: {value}")
+        if modification_type == "pattern":
+            if pattern == "identity":
+                if len(tensor_float.shape) == 2:
+                    # For int4 packed tensors, we need to create identity in the packed format
+                    if original_dtype == torch.uint8:
+                        # Create identity matrix for int4 packed format
+                        # Each uint8 contains two int4 values: [low_nibble, high_nibble]
+                        # The unpacking maps packed[i,j] to unpacked[i, 2*j] and unpacked[i, 2*j+1]
+                        # To get identity matrix, we need 1s at unpacked[i,i] positions
+                        # This means:
+                        # - For even i: set packed[i, i//2] to 1 (unpacks to [1, 0])
+                        # - For odd i: set packed[i, i//2] to 16 (unpacks to [0, 1])
+                        modified_tensor = torch.zeros_like(tensor_float)
+                        modified_tensor = modified_tensor.T
 
-        elif modification_type == 'pattern':
-            if pattern is None:
-                raise ValueError(
-                    "Pattern must be provided for 'pattern' modification")
+                        # For identity matrix, we want 1s at diagonal positions [i, i]
+                        # In packed format, this means:
+                        # - For even i: packed[i, i//2] should unpack to [1, 0] at [i, i] and [i, i+1]
+                        # - For odd i: packed[i, i//2] should unpack to [0, 1] at [i, i-1] and [i, i]
 
-            if pattern == 'ones':
-                modified_tensor.fill_(1.0)
-                print("Set to ones")
-            elif pattern == 'zeros':
-                modified_tensor.fill_(0.0)
-                print("Set to zeros")
-            elif pattern == 'random':
-                torch.randn_like(modified_tensor, out=modified_tensor)
-                print("Set to random values")
-            elif pattern == 'identity':
-                if len(modified_tensor.shape) == 2:
-                    # For square matrices, set to identity
-                    if modified_tensor.shape[0] == modified_tensor.shape[1]:
-                        modified_tensor.fill_(0.0)
-                        torch.diagonal(modified_tensor).fill_(1.0)
-                        print("Set to identity matrix")
+                        # But we need to be careful about the transposition that happens during loading
+                        # Let's create a pattern that works with the actual loading process
+
+                        min_dim = min(tensor_float.shape[0],
+                                      tensor_float.shape[1])
+                        for i in range(min_dim):
+                            if i % 2 == 0:  # Even position
+                                # Set packed[i, i//2] = 1 (unpacks to [1, 0])
+                                modified_tensor[i, i // 2] = 1.0
+                            else:  # Odd position
+                                # Set packed[i, i//2] = 16 (unpacks to [0, 1])
+                                modified_tensor[i, i // 2] = 16.0
                     else:
-                        # For non-square, set diagonal elements to 1
-                        min_dim = min(modified_tensor.shape)
+                        # Regular identity matrix for non-packed tensors
+                        modified_tensor = torch.zeros_like(tensor_float)
+                        min_dim = min(tensor_float.shape[0],
+                                      tensor_float.shape[1])
                         for i in range(min_dim):
                             modified_tensor[i, i] = 1.0
                         print(f"Set diagonal elements to 1 (min_dim={min_dim})")
                     print(
                         f"Original shape: {original_tensor.shape}, Modified shape: {modified_tensor.shape}"
                     )
+                    modified_tensor = modified_tensor.T
                 else:
                     print("Identity pattern only works for 2D tensors")
+                    return
+            elif pattern == "ones":
+                modified_tensor = torch.ones_like(tensor_float)
+            elif pattern == "zeros":
+                modified_tensor = torch.zeros_like(tensor_float)
             else:
-                raise ValueError(f"Unknown pattern: {pattern}")
-
+                print(f"Unknown pattern: {pattern}")
+                return
         else:
-            raise ValueError(f"Unknown modification type: {modification_type}")
+            print(f"Unknown modification type: {modification_type}")
+            return
 
-        # Convert back to uint8 if original was uint8
-        if is_uint8:
-            # Clamp to valid uint8 range and convert
+        # Convert back to original dtype
+        if original_dtype == torch.uint8:
+            # For uint8, we need to ensure values are in valid range [0, 255]
+
             modified_tensor = torch.clamp(modified_tensor, 0, 255)
             modified_tensor = modified_tensor.to(torch.uint8)
-            print(f"Converted back to uint8")
+            # TODO this is a check
+            unpacker = torch.ops.trtllm.unpack_int4_packed_tensor_to_int8
+            unpack_modified_tensor = unpacker(
+                modified_tensor.to(torch.int8).cpu()).contiguous().cuda()
+            print("Converted back to uint8")
+        else:
+            modified_tensor = modified_tensor.to(original_dtype)
 
-        # Update the weights dictionary
+        # Ensure device is correct
+        modified_tensor = modified_tensor.to(original_device)
+
+        # Update the weights
         self.weights[param_key] = modified_tensor
 
-        # Print statistics
-        print(f"Modified tensor stats:")
-        if modified_tensor.dtype == torch.uint8:
-            tensor_float = modified_tensor.float()
-        else:
-            tensor_float = modified_tensor
-        print(f"  Mean: {tensor_float.mean():.6f}")
-        print(f"  Std: {tensor_float.std():.6f}")
-        print(f"  Min: {tensor_float.min():.6f}")
-        print(f"  Max: {tensor_float.max():.6f}")
-
-        return modified_tensor
+        print(f"Parameter {param_key} modified successfully")
+        print(f"Final dtype: {modified_tensor.dtype}")
+        print(f"Final shape: {modified_tensor.shape}")
 
     def save_modified_model(self, output_dir: str):
         """Save the modified model."""
@@ -254,49 +217,6 @@ class QuantizedModelModifier:
         print(f"  - Weights: {weights_path}")
 
         return output_path
-
-    def compare_with_original(self, original_model_path: str, param_key: str):
-        """Compare modified parameter with original."""
-        original_weights = {}
-
-        # Load original weights
-        safetensors_files = list(
-            Path(original_model_path).glob("*.safetensors"))
-        for file_path in safetensors_files:
-            with safe_open(file_path, framework="pt", device="cpu") as f:
-                for key in f.keys():
-                    if key == param_key:
-                        original_weights[key] = f.get_tensor(key)
-                        break
-
-        if param_key not in original_weights:
-            print(f"Parameter {param_key} not found in original model!")
-            return
-
-        original_tensor = original_weights[param_key]
-        modified_tensor = self.weights[param_key]
-
-        print(f"\nComparison for parameter: {param_key}")
-        print(f"Original tensor:")
-        print(f"  Shape: {original_tensor.shape}")
-        print(f"  Mean: {original_tensor.mean():.6f}")
-        print(f"  Std: {original_tensor.std():.6f}")
-        print(f"  Min: {original_tensor.min():.6f}")
-        print(f"  Max: {original_tensor.max():.6f}")
-
-        print(f"Modified tensor:")
-        print(f"  Shape: {modified_tensor.shape}")
-        print(f"  Mean: {modified_tensor.mean():.6f}")
-        print(f"  Std: {modified_tensor.std():.6f}")
-        print(f"  Min: {modified_tensor.min():.6f}")
-        print(f"  Max: {modified_tensor.max():.6f}")
-
-        # Calculate difference
-        diff = torch.abs(original_tensor - modified_tensor)
-        print(f"Difference:")
-        print(f"  Mean absolute difference: {diff.mean():.6f}")
-        print(f"  Max absolute difference: {diff.max():.6f}")
-        print(f"  Total elements changed: {(diff > 0).sum().item()}")
 
 
 def main():
@@ -354,6 +274,31 @@ def main():
     # Initialize modifier
     modifier = QuantizedModelModifier(args.model_path)
 
+    def apply_hardcoded_mlp_modifications_layer_0(modifier, output_dir):
+        mlp_params = [
+            "model.layers.0.mlp.down_proj.input_scale",
+            "model.layers.0.mlp.down_proj.pre_quant_scale",
+            "model.layers.0.mlp.down_proj.weight_scale",
+            "model.layers.0.mlp.down_proj.weight_scale_2",
+        ]
+
+        weight_params = ["model.layers.0.mlp.down_proj.weight"]
+        for param in mlp_params:
+            if param in modifier.weights:
+                modifier.modify_parameter(param, "pattern", pattern="ones")
+
+        for param in weight_params:
+            if param in modifier.weights:
+                print(
+                    f"[Hardcoded] Weight tensor shape before modification: {modifier.weights[param].shape}"
+                )
+                print(
+                    f"[Hardcoded] Weight tensor dtype before modification: {modifier.weights[param].dtype}"
+                )
+                modifier.modify_parameter(param, "pattern", pattern="identity")
+
+            modifier.save_modified_model(output_dir)
+
     def apply_hardcoded_q_proj_modifications(modifier, output_dir):
         # List of q_proj scale parameters in layer 0
         q_proj_params = [
@@ -379,105 +324,52 @@ def main():
             "model.layers.0.self_attn.v_proj.input_scale",
         ]
 
-        weight_param = "model.layers.0.self_attn.q_proj.weight"
+        weight_param = [
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.0.self_attn.k_proj.weight",
+            "model.layers.0.self_attn.v_proj.weight"
+        ]
 
-        print(
-            "\n[Hardcoded] Setting all q_proj scale tensors in layer 0 to ones..."
-        )
         for param in q_proj_params:
             if param in modifier.weights:
                 modifier.modify_parameter(param, "pattern", pattern="ones")
             else:
                 print(f"[Hardcoded] Warning: {param} not found!")
 
-        print(
-            "\n[Hardcoded] Setting all k_proj scale tensors in layer 0 to ones..."
-        )
         for param in k_proj_params:
             if param in modifier.weights:
                 modifier.modify_parameter(param, "pattern", pattern="ones")
             else:
                 print(f"[Hardcoded] Warning: {param} not found!")
 
-        print(
-            "\n[Hardcoded] Setting all v_proj scale tensors in layer 0 to ones..."
-        )
         for param in v_proj_params:
             if param in modifier.weights:
                 modifier.modify_parameter(param, "pattern", pattern="ones")
             else:
                 print(f"[Hardcoded] Warning: {param} not found!")
 
-        print(
-            "[Hardcoded] Setting q_proj weight tensor in layer 0 to diagonal..."
-        )
-        if weight_param in modifier.weights:
-            print(
-                f"[Hardcoded] Weight tensor shape before modification: {modifier.weights[weight_param].shape}"
-            )
-            print(
-                f"[Hardcoded] Weight tensor dtype before modification: {modifier.weights[weight_param].dtype}"
-            )
-            modifier.modify_parameter(weight_param,
-                                      "pattern",
-                                      pattern="identity")
-        else:
-            print(f"[Hardcoded] Warning: {weight_param} not found!")
-        print("[Hardcoded] Saving modified model...")
-        modifier.save_modified_model(output_dir)
+        for param in weight_param:
+            if param in modifier.weights:
+                print(
+                    f"[Hardcoded] Weight tensor shape before modification: {modifier.weights[param].shape}"
+                )
+                print(
+                    f"[Hardcoded] Weight tensor dtype before modification: {modifier.weights[param].dtype}"
+                )
+                modifier.modify_parameter(param, "pattern", pattern="identity")
 
-    try:
+            modifier.save_modified_model(output_dir)
+
         # Load model
-        print("Loading model configuration...")
-        modifier.load_config()
 
-        print("Loading model weights...")
-        modifier.load_weights()
+    print("Loading model configuration...")
+    modifier.load_config()
 
-        if args.hardcoded_q_proj_layer0:
-            apply_hardcoded_q_proj_modifications(modifier, args.output_dir)
-            return
+    print("Loading model weights...")
+    modifier.load_weights()
 
-        # List parameters if requested
-        if args.list_params:
-            print(f"\nAvailable parameters:")
-            if args.layer_idx is not None:
-                print(f"Filtered by layer {args.layer_idx}:")
-            if args.param_type is not None:
-                print(f"Filtered by type '{args.param_type}':")
-
-            available_params = modifier.list_available_parameters(
-                layer_idx=args.layer_idx, parameter_type=args.param_type)
-
-            for param in available_params:
-                print(f"  {param}")
-
-        # Modify parameter if requested
-        elif args.param_key is not None and args.modify is not None:
-            modified_tensor = modifier.modify_parameter(
-                param_key=args.param_key,
-                modification_type=args.modify,
-                value=args.value,
-                pattern=args.pattern)
-
-            # Compare with original if requested
-            if args.compare:
-                modifier.compare_with_original(args.model_path, args.param_key)
-
-            # Save modified model
-            print("\nSaving modified model...")
-            modifier.save_modified_model(args.output_dir)
-
-        elif not args.list_params and not args.info:
-            print(
-                "No action specified. Use --list_params, --info, --modify, or --hardcoded_q_proj_layer0"
-            )
-            print("Use --help for more information")
-
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+    # apply_hardcoded_q_proj_modifications(modifier, args.output_dir)
+    apply_hardcoded_mlp_modifications_layer_0(modifier, args.output_dir)
 
 
 if __name__ == "__main__":
