@@ -11,12 +11,12 @@ This approach is more efficient than extracting layers because:
 
 import argparse
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import torch
 from safetensors import safe_open
+from safetensors.torch import save_file
 
 
 class QuantizedModelModifier:
@@ -187,6 +187,9 @@ class QuantizedModelModifier:
                         for i in range(min_dim):
                             modified_tensor[i, i] = 1.0
                         print(f"Set diagonal elements to 1 (min_dim={min_dim})")
+                    print(
+                        f"Original shape: {original_tensor.shape}, Modified shape: {modified_tensor.shape}"
+                    )
                 else:
                     print("Identity pattern only works for 2D tensors")
             else:
@@ -223,75 +226,34 @@ class QuantizedModelModifier:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Save config
-        config_path = output_path / "config.json"
-        with open(config_path, 'w') as f:
-            json.dump(self.config, f, indent=2)
+        # Copy all files from original model directory
+        original_path = Path(self.model_path)
+        for file_path in original_path.iterdir():
+            if file_path.is_file():
+                # Skip the original safetensors file since we'll create a new one
+                if file_path.name.endswith('.safetensors'):
+                    continue
+                # Copy other files
+                import shutil
+                shutil.copy2(file_path, output_path / file_path.name)
+                print(f"Copied: {file_path.name}")
 
-        # Save weights
+        # Save weights using safetensors
         weights_path = output_path / "model.safetensors"
-        with safe_open(weights_path, framework="pt", device="cpu") as f:
-            for key, tensor in self.weights.items():
-                f.set_tensor(key, tensor)
+
+        # Create metadata for safetensors
+        metadata = {}
+        for key in self.weights.keys():
+            metadata[key] = str(self.weights[key].dtype)
+
+        # Save using safetensors
+        save_file(self.weights, weights_path, metadata=metadata)
 
         print(f"Modified model saved to: {output_path}")
-        print(f"  - Config: {config_path}")
+        print(f"  - All original files copied")
         print(f"  - Weights: {weights_path}")
 
         return output_path
-        """Create a script to run inference with the modified model."""
-        inference_script = f"""#!/usr/bin/env python3
-\"\"\"
-Inference script for modified quantized model.
-
-Modified parameters:
-{chr(10).join(f"- {{param}}" for param in modified_params)}
-\"\"\"
-
-import torch
-import json
-from pathlib import Path
-
-def run_inference(model_path: str, input_text: str = "Hello, world!"):
-    \"\"\"Run inference with the modified model.\"\"\"
-    print(f"Loading modified model from: {{model_path}}")
-
-    # Load config
-    with open(f"{{model_path}}/config.json", 'r') as f:
-        config = json.load(f)
-
-    print(f"Model loaded successfully!")
-    print(f"Modified parameters:")
-{chr(10).join(f"    - {{param}}" for param in modified_params)}
-
-    # Run inference
-    print(f"\\nRunning inference with input: '{{input_text}}'")
-
-    # TODO: Implement actual inference
-    # This would involve tokenization and model forward pass
-    # For now, just print the model structure
-
-    print(f"Model architecture:")
-    print(f"  - Hidden size: {{config.get('hidden_size', 'N/A')}}")
-    print(f"  - Num layers: {{config.get('num_hidden_layers', 'N/A')}}")
-    print(f"  - Num attention heads: {{config.get('num_attention_heads', 'N/A')}}")
-    print(f"  - Quantization: {{config.get('quantization', 'N/A')}}")
-
-    return config
-
-if __name__ == "__main__":
-    model_path = "{output_dir}"
-    config = run_inference(model_path)
-    print("\\n✅ Inference script completed!")
-"""
-
-        script_path = Path(output_dir) / "run_inference.py"
-        with open(script_path, 'w') as f:
-            f.write(inference_script)
-
-        # Make executable
-        os.chmod(script_path, 0o755)
-        print(f"Created inference script: {script_path}")
 
     def compare_with_original(self, original_model_path: str, param_key: str):
         """Compare modified parameter with original."""
@@ -380,11 +342,89 @@ def main():
     parser.add_argument("--compare",
                         action="store_true",
                         help="Compare modified parameter with original")
+    parser.add_argument(
+        "--hardcoded_q_proj_layer0",
+        action="store_true",
+        help=
+        "Apply hardcoded modifications to all q_proj scale tensors in layer 0 (set to ones) and weight (set to diagonal)"
+    )
 
     args = parser.parse_args()
 
     # Initialize modifier
     modifier = QuantizedModelModifier(args.model_path)
+
+    def apply_hardcoded_q_proj_modifications(modifier, output_dir):
+        # List of q_proj scale parameters in layer 0
+        q_proj_params = [
+            "model.layers.0.self_attn.q_proj.pre_quant_scale",
+            "model.layers.0.self_attn.q_proj.weight_scale",
+            "model.layers.0.self_attn.q_proj.weight_scale_2",
+            "model.layers.0.self_attn.q_proj.input_scale",
+        ]
+
+        # List of k_proj scale parameters in layer 0
+        k_proj_params = [
+            "model.layers.0.self_attn.k_proj.pre_quant_scale",
+            "model.layers.0.self_attn.k_proj.weight_scale",
+            "model.layers.0.self_attn.k_proj.weight_scale_2",
+            "model.layers.0.self_attn.k_proj.input_scale",
+        ]
+
+        # List of v_proj scale parameters in layer 0
+        v_proj_params = [
+            "model.layers.0.self_attn.v_proj.pre_quant_scale",
+            "model.layers.0.self_attn.v_proj.weight_scale",
+            "model.layers.0.self_attn.v_proj.weight_scale_2",
+            "model.layers.0.self_attn.v_proj.input_scale",
+        ]
+
+        weight_param = "model.layers.0.self_attn.q_proj.weight"
+
+        print(
+            "\n[Hardcoded] Setting all q_proj scale tensors in layer 0 to ones..."
+        )
+        for param in q_proj_params:
+            if param in modifier.weights:
+                modifier.modify_parameter(param, "pattern", pattern="ones")
+            else:
+                print(f"[Hardcoded] Warning: {param} not found!")
+
+        print(
+            "\n[Hardcoded] Setting all k_proj scale tensors in layer 0 to ones..."
+        )
+        for param in k_proj_params:
+            if param in modifier.weights:
+                modifier.modify_parameter(param, "pattern", pattern="ones")
+            else:
+                print(f"[Hardcoded] Warning: {param} not found!")
+
+        print(
+            "\n[Hardcoded] Setting all v_proj scale tensors in layer 0 to ones..."
+        )
+        for param in v_proj_params:
+            if param in modifier.weights:
+                modifier.modify_parameter(param, "pattern", pattern="ones")
+            else:
+                print(f"[Hardcoded] Warning: {param} not found!")
+
+        print(
+            "[Hardcoded] Setting q_proj weight tensor in layer 0 to diagonal..."
+        )
+        if weight_param in modifier.weights:
+            print(
+                f"[Hardcoded] Weight tensor shape before modification: {modifier.weights[weight_param].shape}"
+            )
+            print(
+                f"[Hardcoded] Weight tensor dtype before modification: {modifier.weights[weight_param].dtype}"
+            )
+            modifier.modify_parameter(weight_param,
+                                      "pattern",
+                                      pattern="identity")
+        else:
+            print(f"[Hardcoded] Warning: {weight_param} not found!")
+        print("[Hardcoded] Saving modified model...")
+        modifier.save_modified_model(output_dir)
 
     try:
         # Load model
@@ -393,6 +433,10 @@ def main():
 
         print("Loading model weights...")
         modifier.load_weights()
+
+        if args.hardcoded_q_proj_layer0:
+            apply_hardcoded_q_proj_modifications(modifier, args.output_dir)
+            return
 
         # List parameters if requested
         if args.list_params:
@@ -408,6 +452,8 @@ def main():
             for param in available_params:
                 print(f"  {param}")
 
+        # Modify parameter if requested
+        elif args.param_key is not None and args.modify is not None:
             modified_tensor = modifier.modify_parameter(
                 param_key=args.param_key,
                 modification_type=args.modify,
@@ -423,7 +469,9 @@ def main():
             modifier.save_modified_model(args.output_dir)
 
         elif not args.list_params and not args.info:
-            print("No action specified. Use --list_params, --info, or --modify")
+            print(
+                "No action specified. Use --list_params, --info, --modify, or --hardcoded_q_proj_layer0"
+            )
             print("Use --help for more information")
 
     except Exception as e:
