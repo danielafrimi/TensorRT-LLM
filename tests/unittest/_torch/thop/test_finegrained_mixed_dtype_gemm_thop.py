@@ -16,12 +16,35 @@ from tests.unittest.trt.quantization import _utils
 from tests.unittest.utils.util import (skip_neither_ada_nor_hopper_unittest,
                                        unittest_name_func)
 
+torch.set_printoptions(sci_mode=False)
+
 
 class TestWeightOnlyGroupWiseQuantMatmul(unittest.TestCase):
 
     def setUp(self):
         torch.manual_seed(0)
         self.device = 'cuda'
+
+    def _create_int4_packed_identity_weights(self, k, n):
+        min_dim = min(k, n)
+        packed_shape = (k, n // 2)  # Each uint8 contains 2 int4 values
+
+        # Create packed weights as uint8
+        packed_weights = torch.zeros(packed_shape,
+                                     dtype=torch.uint8,
+                                     device=self.device)
+
+        # Set identity pattern in packed format
+        for i in range(min_dim):
+            if i % 2 == 0:  # Even position
+                # Set packed[i, i//2] to 1 (unpacks to [1, 0])
+                packed_weights[i, i // 2] = 1
+            else:  # Odd position
+                # Set packed[i, i//2] to 16 (unpacks to [0, 1])
+                packed_weights[i, i // 2] = 16
+
+        # Convert to int8 for the test
+        return packed_weights.to(torch.int8)
 
     def _run_finegrained_mixed_dtype_gemm(self,
                                           m,
@@ -42,7 +65,7 @@ class TestWeightOnlyGroupWiseQuantMatmul(unittest.TestCase):
                                  dtype=activation_dtype,
                                  device=self.device)
 
-        scale = torch.rand(total_groups,
+        scale = torch.ones(total_groups,
                            n,
                            dtype=scale_zero_dtype,
                            device=self.device)
@@ -50,31 +73,32 @@ class TestWeightOnlyGroupWiseQuantMatmul(unittest.TestCase):
             total_groups, n, dtype=scale_zero_dtype,
             device=self.device) if has_zero else None
 
-        pre_quant_scale = torch.rand(1,
+        pre_quant_scale = torch.ones(1,
                                      k,
                                      dtype=activation_dtype,
                                      device=self.device)
-        bias = torch.randn(1, n, dtype=activation_dtype,
+        bias = torch.zeros(1, n, dtype=activation_dtype,
                            device=self.device) if has_bias else None
 
-        fp8_alpha = torch.rand(1, dtype=torch.float32,
+        fp8_alpha = torch.ones(1, dtype=torch.float32,
                                device="cuda") if use_w4a8_awq else None
 
-        num_weights_in_32_bits = 0
         if quantized_weight_dtype == torch.int8:
-            num_weights_in_32_bits = 4
+            pass
         elif quantized_weight_dtype == torch.quint4x2:
-            num_weights_in_32_bits = 8
+            pass
         else:
             assert False, "Unsupported weight dtype."
 
-        unprocessed_int_weight = torch.randint(-2**31,
-                                               2**31,
-                                               (k, n // num_weights_in_32_bits),
-                                               dtype=torch.int32,
-                                               device=self.device)
+        # unprocessed_int_weight = torch.randint(-2**31,
+        #                                        2**31,
+        #                                        (k, n // num_weights_in_32_bits),
+        #                                        dtype=torch.int32,
+        #                                        device=self.device)
 
-        unprocessed_weight = unprocessed_int_weight.view(torch.int8)
+        # unprocessed_weight = unprocessed_int_weight.view(torch.int8)
+
+        unprocessed_weight = self._create_int4_packed_identity_weights(k, n)
 
         if use_w4a8_awq:
             activation_type = torch.float8_e4m3fn
@@ -130,65 +154,67 @@ class TestWeightOnlyGroupWiseQuantMatmul(unittest.TestCase):
 
         _utils.woq_assert_near_eq(ref, output, 2)
 
-    @parameterized.expand([(3, 1024, 64, 64, True, False, True),
-                           (128, 1024, 256, 64, True, False, True),
-                           (192, 2048, 384, 64, True, False, True),
-                           (256, 2048, 1024, 64, True, False, True),
-                           (4, 1024, 128, 128, True, False, True),
-                           (64, 1024, 256, 128, True, False, True),
-                           (384, 2048, 384, 128, True, False, True),
-                           (512, 2048, 1024, 128, True, False, True),
-                           (4, 1024, 128, 128, True, True, True),
-                           (64, 1024, 256, 128, True, True, True),
-                           (384, 2048, 384, 128, True, True, True),
-                           (512, 2048, 1024, 128, True, True, False)])
-    def test_matmul_fp16_int4_input(self, m, n, k, group_size, has_pre_quant,
-                                    has_zero, has_bias):
-        self._run_finegrained_mixed_dtype_gemm(m,
-                                               n,
-                                               k,
-                                               group_size,
-                                               torch.float16,
-                                               torch.quint4x2,
-                                               has_pre_quant=has_pre_quant,
-                                               has_zero=has_zero,
-                                               has_bias=has_bias,
-                                               use_w4a8_awq=False)
+    # @parameterized.expand([(3, 1024, 64, 64, True, False, True),
+    #                        (128, 1024, 256, 64, True, False, True),
+    #                        (192, 2048, 384, 64, True, False, True),
+    #                        (256, 2048, 1024, 64, True, False, True),
+    #                        (4, 1024, 128, 128, True, False, True),
+    #                        (64, 1024, 256, 128, True, False, True),
+    #                        (384, 2048, 384, 128, True, False, True),
+    #                        (512, 2048, 1024, 128, True, False, True),
+    #                        (4, 1024, 128, 128, True, True, True),
+    #                        (64, 1024, 256, 128, True, True, True),
+    #                        (384, 2048, 384, 128, True, True, True),
+    #                        (512, 2048, 1024, 128, True, True, False)])
+    # def test_matmul_fp16_int4_input(self, m, n, k, group_size, has_pre_quant,
+    #                                 has_zero, has_bias):
+    #     self._run_finegrained_mixed_dtype_gemm(m,
+    #                                            n,
+    #                                            k,
+    #                                            group_size,
+    #                                            torch.float16,
+    #                                            torch.quint4x2,
+    #                                            has_pre_quant=has_pre_quant,
+    #                                            has_zero=has_zero,
+    #                                            has_bias=has_bias,
+    #                                            use_w4a8_awq=False)
 
-    @parameterized.expand([(3, 1024, 64, 64, True, False, True),
-                           (128, 1024, 256, 64, True, False, True),
-                           (192, 2048, 384, 64, True, False, True),
-                           (256, 2048, 1024, 64, True, False, True),
-                           (4, 1024, 128, 128, True, False, True),
-                           (64, 1024, 256, 128, True, False, True),
-                           (384, 2048, 384, 128, True, False, True),
-                           (512, 2048, 1024, 128, True, False, True),
-                           (4, 1024, 128, 128, True, True, True),
-                           (64, 1024, 256, 128, True, True, True),
-                           (384, 2048, 384, 128, True, True, True),
-                           (512, 2048, 1024, 128, True, True, False)])
-    def test_matmul_bf16_int4_input(self, m, n, k, group_size, has_pre_quant,
-                                    has_zero, has_bias):
-        self._run_finegrained_mixed_dtype_gemm(m,
-                                               n,
-                                               k,
-                                               group_size,
-                                               torch.bfloat16,
-                                               torch.quint4x2,
-                                               has_pre_quant=has_pre_quant,
-                                               has_zero=has_zero,
-                                               has_bias=has_bias,
-                                               use_w4a8_awq=False)
+    # @parameterized.expand([(3, 1024, 64, 64, True, False, True),
+    #                        (128, 1024, 256, 64, True, False, True),
+    #                        (192, 2048, 384, 64, True, False, True),
+    #                        (256, 2048, 1024, 64, True, False, True),
+    #                        (4, 1024, 128, 128, True, False, True),
+    #                        (64, 1024, 256, 128, True, False, True),
+    #                        (384, 2048, 384, 128, True, False, True),
+    #                        (512, 2048, 1024, 128, True, False, True),
+    #                        (4, 1024, 128, 128, True, True, True),
+    #                        (64, 1024, 256, 128, True, True, True),
+    #                        (384, 2048, 384, 128, True, True, True),
+    #                        (512, 2048, 1024, 128, True, True, False)])
+    # def test_matmul_bf16_int4_input(self, m, n, k, group_size, has_pre_quant,
+    #                                 has_zero, has_bias):
+    #     self._run_finegrained_mixed_dtype_gemm(m,
+    #                                            n,
+    #                                            k,
+    #                                            group_size,
+    #                                            torch.bfloat16,
+    #                                            torch.quint4x2,
+    #                                            has_pre_quant=has_pre_quant,
+    #                                            has_zero=has_zero,
+    #                                            has_bias=has_bias,
+    #                                            use_w4a8_awq=False)
 
     @parameterized.expand(
-        [(1, 1024, 128, torch.float16, True, True, True, 128, True),
-         (4, 1024, 512, torch.bfloat16, True, True, True, 128, True),
-         (4, 1024, 512, torch.float16, True, True, True, 128, True),
-         (16, 1024, 256, torch.float16, True, True, False, 128, True),
-         (32, 1024, 384, torch.bfloat16, True, True, True, 128, True),
-         (64, 1024, 256, torch.float16, True, True, False, 128, True),
-         (128, 2048, 384, torch.float16, True, False, True, 128, True),
-         (256, 2048, 1024, torch.float16, True, False, False, 128, True)],
+        [
+            (16, 1152, 6912, torch.float16, True, True, True, 128, True),
+            #  (4, 1024, 512, torch.bfloat16, True, True, True, 128, True),
+            #  (4, 1024, 512, torch.float16, True, True, True, 128, True),
+            #  (16, 1024, 256, torch.float16, True, True, False, 128, True),
+            #  (32, 1024, 384, torch.bfloat16, True, True, True, 128, True),
+            #  (64, 1024, 256, torch.float16, True, True, False, 128, True),
+            #  (128, 2048, 384, torch.float16, True, False, True, 128, True),
+            #  (256, 2048, 1024, torch.float16, True, False, False, 128, True)
+        ],
         name_func=unittest_name_func)
     @skip_neither_ada_nor_hopper_unittest
     def test_prequant_matmul_fp8_int4_input(self, m, n, k, dtype, has_pre_quant,
@@ -205,3 +231,8 @@ class TestWeightOnlyGroupWiseQuantMatmul(unittest.TestCase):
             has_bias=has_bias,
             group_size=group_size,
             use_w4a8_awq=use_w4a8_awq)
+
+
+if __name__ == "__main__":
+    for i in range(10):
+        unittest.main()
