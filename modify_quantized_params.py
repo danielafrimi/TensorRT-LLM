@@ -111,29 +111,30 @@ class QuantizedModelModifier:
                         # Each uint8 contains two int4 values: [low_nibble, high_nibble]
                         # The unpacking maps packed[i,j] to unpacked[i, 2*j] and unpacked[i, 2*j+1]
                         # To get identity matrix, we need 1s at unpacked[i,i] positions
-                        # This means:
-                        # - For even i: set packed[i, i//2] to 1 (unpacks to [1, 0])
-                        # - For odd i: set packed[i, i//2] to 16 (unpacks to [0, 1])
+
                         modified_tensor = torch.zeros_like(tensor_float)
                         modified_tensor = modified_tensor.T
 
-                        # For identity matrix, we want 1s at diagonal positions [i, i]
-                        # In packed format, this means:
-                        # - For even i: packed[i, i//2] should unpack to [1, 0] at [i, i] and [i, i+1]
-                        # - For odd i: packed[i, i//2] should unpack to [0, 1] at [i, i-1] and [i, i]
+                        # For identity matrix, we want unpacked[i,i] = 1 for all i
+                        # This means:
+                        # - If i is even: set packed[i, i//2] = 1 (unpacks to [1, 0])
+                        # - If i is odd: set packed[i, i//2] = 16 (unpacks to [0, 1])
+                        # But we need to be careful about the transposition
 
-                        # But we need to be careful about the transposition that happens during loading
-                        # Let's create a pattern that works with the actual loading process
+                        rows, cols = modified_tensor.shape
+                        min_dim = min(
+                            rows, cols * 2
+                        )  # cols*2 because unpacking doubles the second dimension
 
-                        min_dim = min(tensor_float.shape[0],
-                                      tensor_float.shape[1])
                         for i in range(min_dim):
-                            if i % 2 == 0:  # Even position
-                                # Set packed[i, i//2] = 1 (unpacks to [1, 0])
-                                modified_tensor[i, i // 2] = 1.0
-                            else:  # Odd position
-                                # Set packed[i, i//2] = 16 (unpacks to [0, 1])
-                                modified_tensor[i, i // 2] = 16.0
+                            col_idx = i // 2
+                            if col_idx < cols:  # Make sure we don't go out of bounds
+                                if i % 2 == 0:  # Even position - set low nibble to 1
+                                    # packed[i, col_idx] = 1 (unpacks to [1, 0])
+                                    modified_tensor[i, col_idx] = 1
+                                else:  # Odd position - set high nibble to 1
+                                    # packed[i, col_idx] = 16 (unpacks to [0, 1])
+                                    modified_tensor[i, col_idx] = 16
                     else:
                         # Regular identity matrix for non-packed tensors
                         modified_tensor = torch.zeros_like(tensor_float)
@@ -153,6 +154,8 @@ class QuantizedModelModifier:
                 modified_tensor = torch.ones_like(tensor_float)
             elif pattern == "zeros":
                 modified_tensor = torch.zeros_like(tensor_float)
+            elif pattern == "value":
+                modified_tensor = torch.full_like(tensor_float, value)
             else:
                 print(f"Unknown pattern: {pattern}")
                 return
@@ -166,10 +169,36 @@ class QuantizedModelModifier:
 
             modified_tensor = torch.clamp(modified_tensor, 0, 255)
             modified_tensor = modified_tensor.to(torch.uint8)
-            # TODO this is a check
-            unpacker = torch.ops.trtllm.unpack_int4_packed_tensor_to_int8
-            unpack_modified_tensor = unpacker(
-                modified_tensor.to(torch.int8).cpu()).contiguous().cuda()
+
+            # Debug: Test unpacking to verify identity matrix
+            if pattern == "identity":
+                try:
+                    unpacker = torch.ops.trtllm.unpack_int4_packed_tensor_to_int8
+                    unpacked = unpacker(
+                        modified_tensor.T.to(
+                            torch.int8).contiguous().cpu()).contiguous().cuda()
+                    print(f"Debug - Unpacked tensor shape: {unpacked.shape}")
+                    print(
+                        f"Debug - Number of ones in unpacked tensor: {(unpacked == 1).sum().item()}"
+                    )
+                    print(
+                        f"Debug - Expected number of ones: {min(unpacked.shape)}"
+                    )
+
+                    # Check if it's actually an identity matrix
+                    min_dim = min(unpacked.shape[0], unpacked.shape[1])
+                    diagonal_ones = sum(1 for i in range(min_dim)
+                                        if unpacked[i, i] == 1)
+                    print(
+                        f"Debug - Ones on diagonal: {diagonal_ones}/{min_dim}")
+
+                    if diagonal_ones == min_dim:
+                        print("✓ Successfully created identity matrix!")
+                    else:
+                        print("✗ Identity matrix creation may have issues")
+                except Exception as e:
+                    print(f"Debug unpacking failed: {e}")
+
             print("Converted back to uint8")
         else:
             modified_tensor = modified_tensor.to(original_dtype)
@@ -297,7 +326,7 @@ def main():
                 )
                 modifier.modify_parameter(param, "pattern", pattern="identity")
 
-            modifier.save_modified_model(output_dir)
+        modifier.save_modified_model(output_dir)
 
     def apply_hardcoded_q_proj_modifications(modifier, output_dir):
         # List of q_proj scale parameters in layer 0
@@ -358,9 +387,7 @@ def main():
                 )
                 modifier.modify_parameter(param, "pattern", pattern="identity")
 
-            modifier.save_modified_model(output_dir)
-
-        # Load model
+        modifier.save_modified_model(output_dir)
 
     print("Loading model configuration...")
     modifier.load_config()

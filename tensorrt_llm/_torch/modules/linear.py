@@ -656,14 +656,14 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
                 f"in_features ({self.in_features}) must be divisible by group_size ({group_size}) "
                 f"for INT4 per-group quantization scale dimensions.")
 
-        module.weight_scale = Parameter(
-            torch.empty((out_features, in_features // group_size),
-                        dtype=torch.float16),
-            requires_grad=False
-        )  # NOTE: for fp8 activation, scales needs to be float16
+        # NOTE: for FP8 activation, scales needs to be float16
+        module.weight_scale = Parameter(torch.empty(
+            (out_features, in_features // group_size), dtype=torch.float16),
+                                        requires_grad=False)
 
         # Similar to W4A16 AWQ, not all linears will have this tensor
         module.pre_quant_scale = None
+        module.split = False
 
         module.input_scale = Parameter(torch.tensor(1., dtype=torch.float32),
                                        requires_grad=False)
@@ -685,6 +685,25 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
         if module.pre_quant_scale is not None:
             input = input * module.pre_quant_scale
 
+        # TODO maybe for the qkv dont do the preprocess_mixed_gemm and in the apply check split the weights according to q,k,v shapes ->
+        # TODO preprocess sepertly (also scales as well), then run the kernek for each of them and concat at the end?
+
+        if module.split:
+            q_weight = module.weight[:, :512]
+            k_weight = module.weight[:, 512:640]
+            v_weight = module.weight[:, 640:]
+
+            q_weight_scales = module.weight_scale.T[:, :1024]
+            k_weight_scales = module.weight_scale.T[:, 1024:(1024 + 256)]
+            v_weight_scales = module.weight_scale.T[:, (1024 + 256):]
+
+            weights_preprocessed = []
+            for weight in [q_weight, k_weight, v_weight]:
+                weight_ = preprocess_weights_for_mixed_gemm(
+                    weight.contiguous().cpu(), torch.quint4x2,
+                    torch.float8_e4m3fn).cuda().contiguous()
+                weights_preprocessed.append(weight_)
+
         quantized_input = input
         if input.dtype != torch.float8_e4m3fn:
             quantized_input, _ = torch.ops.tensorrt_llm.static_quantize_e4m3_per_tensor(
@@ -692,17 +711,38 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
 
         bias = bias.contiguous() if bias is not None else None
 
-        output = torch.ops.trtllm.finegrained_mixed_dtype_gemm(
-            quantized_input.contiguous(),
-            module.weight.contiguous(),
-            module.weight_scale.T.contiguous(),
-            module.quant_config.group_size,
-            module.quant_config.has_zero_point,
-            output_dtype=module.dtype
-            or input.dtype,  # NOTE: output_dtype can only be bf16/fp16 for W4A8
-            alpha=module.alpha.item(),
-            bias=bias,
-            zeros=None)
+        if module.split:
+            outputs = []
+            for weight, weight_scales in zip(
+                    weights_preprocessed,
+                [q_weight_scales, k_weight_scales, v_weight_scales]):
+                output = torch.ops.trtllm.finegrained_mixed_dtype_gemm(
+                    quantized_input.contiguous(),
+                    weight.contiguous(),
+                    weight_scales.contiguous(),
+                    module.quant_config.group_size,
+                    module.quant_config.has_zero_point,
+                    output_dtype=module.dtype or input.
+                    dtype,  # NOTE: output_dtype can only be bf16/fp16 for W4A8
+                    alpha=module.alpha.item(),
+                    bias=bias,
+                    zeros=None)
+                outputs.append(output)
+
+            output = torch.cat(outputs, dim=-1)
+
+        else:
+            output = torch.ops.trtllm.finegrained_mixed_dtype_gemm(
+                quantized_input.contiguous(),
+                module.weight.contiguous(),
+                module.weight_scale.T.contiguous(),
+                module.quant_config.group_size,
+                module.quant_config.has_zero_point,
+                output_dtype=module.dtype or input.
+                dtype,  # NOTE: output_dtype can only be bf16/fp16 for W4A8
+                alpha=module.alpha.item(),
+                bias=bias,
+                zeros=None)
 
         return output
 
@@ -746,17 +786,15 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
 
         # Compute scaling factor and alpha required by GEMM kernels
         alpha = input_scale.float() * weight_scale_2.float()
-        input_scale = 1.0 / input_scale  # TODO if we set it like this the output is the same token at the end multiple times. when changing it we get garbase
+        # input_scale = 1.0 / input_scale  # TODO if we set it like this the output is the same token at the end multiple times. when changing it we get garbase
 
         return input_scale, weight_scale, alpha
 
     def load_weights_vanilla(self, module: Linear, weights: List[Dict]):
-        print(weights)
         load_weights_vanilla_helper(module, weights)
 
         device = torch.device('cuda')
         if "pre_quant_scale" in weights[0].keys():
-            print("there is pre quant scale in vanilla")
             pre_quant_scale = load_weight_shard(weights[0]['pre_quant_scale'],
                                                 module.tp_size, module.tp_rank,
                                                 module.tp_mode, device)
@@ -774,6 +812,8 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
             tp_rank=module.tp_rank,
             tp_mode=module.tp_mode)
 
+        assert len(weight_scale) == 1, "there should be only one weight scale"
+
         copy_weight(module.weight_scale, weight_scale[0])
         copy_weight(module.input_scale, input_scale)
         copy_weight(module.alpha, alpha)
@@ -782,19 +822,28 @@ class W4A8_AWQ_LinearMethod(LinearMethodBase):
 
     def load_weights_fused_qkv_linear(self, module: Linear,
                                       weights: List[Dict]):
+        # module.split = True
 
         q_weight, k_weight, v_weight = load_weights_fused_qkv_helper(
             module, weights)
 
-        # fused_weight = torch.cat((q_weight, k_weight, v_weight))
-        a = []
-        for i, weight in enumerate([q_weight, k_weight, v_weight]):
-            weight_ = preprocess_weights_for_mixed_gemm(
-                weight.to(torch.int8).T.contiguous().cpu(), torch.quint4x2,
-                torch.float8_e4m3fn).cuda().contiguous()
-            a.append(weight_)
+        # fused_weight = torch.cat((q_weight, k_weight, v_weight)).to(torch.int8).T.contiguous().cuda()
+        fused_weight = torch.cat((q_weight, k_weight, v_weight))
+        fused_weight = preprocess_weights_for_mixed_gemm(
+            fused_weight.to(torch.int8).T.contiguous().cpu(), torch.quint4x2,
+            torch.float8_e4m3fn).cuda().contiguous()
 
-        fused_weight = torch.cat(a, dim=-1)
+        # unpacker = torch.ops.trtllm.unpack_int4_packed_tensor_to_int8
+        # q = unpacker(q_weight.to(torch.int8).contiguous().cpu()).contiguous().cuda()
+
+        # a = []
+        # for i, weight in enumerate([q_weight, k_weight, v_weight]):
+        #     weight_ = preprocess_weights_for_mixed_gemm(
+        #         weight.to(torch.int8).T.contiguous().cpu(), torch.quint4x2,
+        #         torch.float8_e4m3fn).cuda().contiguous()
+        #     a.append(weight_)
+
+        # fused_weight = torch.cat(a, dim=-1)
         copy_weight(module.weight, fused_weight)
 
         input_scale, weight_scales, alpha = self.load_weight_scales_w4a8(
