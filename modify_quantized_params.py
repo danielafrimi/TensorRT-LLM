@@ -18,6 +18,8 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
+import tensorrt_llm  # noqa
+
 
 class QuantizedModelModifier:
 
@@ -128,13 +130,14 @@ class QuantizedModelModifier:
 
                         for i in range(min_dim):
                             col_idx = i // 2
-                            if col_idx < cols:  # Make sure we don't go out of bounds
-                                if i % 2 == 0:  # Even position - set low nibble to 1
-                                    # packed[i, col_idx] = 1 (unpacks to [1, 0])
+                            if col_idx < cols:
+                                if i % 2 == 0:
+
                                     modified_tensor[i, col_idx] = 1
-                                else:  # Odd position - set high nibble to 1
-                                    # packed[i, col_idx] = 16 (unpacks to [0, 1])
+                                    # modified_tensor[i, col_idx] = 2
+                                else:
                                     modified_tensor[i, col_idx] = 16
+                                    # modified_tensor[i, col_idx] = 32 # for get a diagonal of 2
                     else:
                         # Regular identity matrix for non-packed tensors
                         modified_tensor = torch.zeros_like(tensor_float)
@@ -304,17 +307,22 @@ def main():
     modifier = QuantizedModelModifier(args.model_path)
 
     def apply_hardcoded_mlp_modifications_layer_0(modifier, output_dir):
-        mlp_params = [
-            "model.layers.0.mlp.down_proj.input_scale",
-            "model.layers.0.mlp.down_proj.pre_quant_scale",
-            "model.layers.0.mlp.down_proj.weight_scale",
-            "model.layers.0.mlp.down_proj.weight_scale_2",
-        ]
+
+        mlp_params_value = {
+            "model.layers.0.mlp.down_proj.input_scale": 1.0,
+            "model.layers.0.mlp.down_proj.weight_scale_2": 1.0,
+            "model.layers.0.mlp.down_proj.weight_scale": 2.0,
+            "model.layers.0.mlp.down_proj.pre_quant_scale": 1.0,
+        }
 
         weight_params = ["model.layers.0.mlp.down_proj.weight"]
-        for param in mlp_params:
+
+        for param, value in mlp_params_value.items():
             if param in modifier.weights:
-                modifier.modify_parameter(param, "pattern", pattern="ones")
+                modifier.modify_parameter(param,
+                                          "pattern",
+                                          pattern="value",
+                                          value=value)
 
         for param in weight_params:
             if param in modifier.weights:
@@ -325,6 +333,7 @@ def main():
                     f"[Hardcoded] Weight tensor dtype before modification: {modifier.weights[param].dtype}"
                 )
                 modifier.modify_parameter(param, "pattern", pattern="identity")
+                # modifier.modify_parameter(param, "pattern", pattern="value", value=1.0)
 
         modifier.save_modified_model(output_dir)
 
