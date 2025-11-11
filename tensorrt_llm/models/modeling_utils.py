@@ -165,6 +165,12 @@ class QuantConfig:
         ]
         return QuantModeWrapper(quant_mode_list)
 
+    @classmethod
+    def from_hf_quant_config(cls, hf_quant_config: dict) -> 'QuantConfig':
+        return cls(
+            
+        )
+
     @cached_property
     def layer_quant_mode(self) -> QuantMode:
         return QuantMode.from_quant_algo(

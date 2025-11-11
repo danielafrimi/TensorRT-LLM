@@ -331,6 +331,79 @@ class ModelLoader:
 
             assert self.speculative_model_obj.is_local_model
 
+    def set_qunatization_attributes(self, quant_config, hf_quant_config):
+        hf_quant_algo = hf_quant_config.pop("quant_algo", None)
+        if hf_quant_algo is not None:
+            # fp8_pb_wo from modelopt is the same as fp8_block_scales
+            if hf_quant_algo == "fp8_pb_wo":
+                hf_quant_algo = QuantAlgo.FP8_BLOCK_SCALES
+            else:
+                hf_quant_algo = QuantAlgo(hf_quant_algo)
+            if quant_config.quant_algo is None:
+                logger.info(
+                    f"Setting quant_algo={hf_quant_algo} form HF quant config."
+                )
+                quant_config.quant_algo = hf_quant_algo
+            elif quant_config.quant_algo != hf_quant_algo:
+                raise ValueError(
+                    f"Specified quant_algo={quant_config.quant_algo}, conflicting with quant_algo={hf_quant_algo} from HF quant config."
+                )
+        else:
+            raise ValueError(
+                "Pre-quantized checkpoint must have quant_algo.")
+
+        hf_kv_cache_quant_algo = hf_quant_config.pop(
+            "kv_cache_quant_algo", None)
+        if hf_kv_cache_quant_algo is not None:
+            hf_kv_cache_quant_algo = QuantAlgo(hf_kv_cache_quant_algo)
+            if quant_config.kv_cache_quant_algo is None:
+                logger.info(
+                    f"Setting kv_cache_quant_algo={hf_kv_cache_quant_algo} form HF quant config."
+                )
+                quant_config.kv_cache_quant_algo = hf_kv_cache_quant_algo
+            elif quant_config.kv_cache_quant_algo != hf_kv_cache_quant_algo:
+                raise ValueError(
+                    f"Specified kv_cache_quant_algo={quant_config.kv_cache_quant_algo}, conflicting with kv_cache_quant_algo={hf_kv_cache_quant_algo} from HF quant config."
+                )
+        else:
+            # New HF format fallback: map kv_cache_scheme → kv_cache_quant_algo
+            kvs = hf_quant_config.pop("kv_cache_scheme", None)
+            if kvs and getattr(quant_config, "kv_cache_quant_algo", None) is None:
+                kvs_type = str(kvs.get("type", "")).lower()
+                kvs_bits = int(kvs.get("num_bits", 0))
+                if kvs_type == "float" and kvs_bits == 8:
+                    quant_config.kv_cache_quant_algo = QuantAlgo.FP8
+                elif kvs_type == "int" and kvs_bits == 4: # todo check it 
+                    quant_config.kv_cache_quant_algo = QuantAlgo.NVFP4
+
+            if quant_config.kv_cache_quant_algo not in [
+                    None, QuantAlgo.FP8, QuantAlgo.NVFP4
+            ]:
+                raise ValueError(
+                    f"Only kv_cache_quant_algo={QuantAlgo.FP8} or {QuantAlgo.NVFP4} is allowed for pre-quantized checkpoint, got {quant_config.kv_cache_quant_algo}."
+                )
+
+        print(f"this is the qunat config algo {quant_config.kv_cache_quant_algo}")
+
+        ignore = hf_quant_config.pop("ignore", None)
+        if ignore is not None and getattr(quant_config, "exclude_modules", None) is None: # new format
+            print("Daniel!!!!!!!!!!!!!!!", ignore)
+            quant_config.exclude_modules = ignore
+
+        if "pre_quant_scale" not in hf_quant_config:
+            print(f"this is the qunat config algo {quant_config.quant_algo}")
+            if quant_config.quant_algo in {QuantAlgo.W4A16_AWQ, QuantAlgo.W4A8_AWQ}:
+                quant_config.pre_quant_scale = True
+
+        
+        for key, value in hf_quant_config.items():
+            print(f"this is the key {key} and value {value}")
+            logger.info(
+                f"Setting {key}={str(value)[:100]}{'...' if len(str(value)) > 100 else ''} from HF quant config."
+            )
+            setattr(quant_config, key, value) 
+        return quant_config
+
     def _update_from_hf_quant_config(self) -> bool:
         """Update quant_config from the config file of pre-quantized HF checkpoint.
 
@@ -338,9 +411,14 @@ class ModelLoader:
             prequantized (bool): Whether the checkpoint is pre-quantized.
         """
         quant_config = self.llm_args.quant_config
+        ckpt_quant_config = QuantConfig.from_model_dir(self._model_dir)
+        quant_config.update(ckpt_quant_config)
 
-        hf_quant_config_path = f"{self._model_dir}/hf_quant_config.json"
-        if os.path.exists(hf_quant_config_path):
+        # quant_config = QuantConfig.from_hf_quant_config(hf_quant_config)
+
+        hf_quant_config_path = Path(f"{self._model_dir}/hf_quant_config.json")  
+        if hf_quant_config_path.exists():
+            
             logger.info(
                 f"Found {hf_quant_config_path}, pre-quantized checkpoint is used."
             )
@@ -348,53 +426,9 @@ class ModelLoader:
                 hf_quant_config = json.load(f)
                 hf_quant_config = hf_quant_config["quantization"]
 
-            hf_quant_algo = hf_quant_config.pop("quant_algo", None)
-            if hf_quant_algo is not None:
-                # fp8_pb_wo from modelopt is the same as fp8_block_scales
-                if hf_quant_algo == "fp8_pb_wo":
-                    hf_quant_algo = QuantAlgo.FP8_BLOCK_SCALES
-                else:
-                    hf_quant_algo = QuantAlgo(hf_quant_algo)
-                if quant_config.quant_algo is None:
-                    logger.info(
-                        f"Setting quant_algo={hf_quant_algo} form HF quant config."
-                    )
-                    quant_config.quant_algo = hf_quant_algo
-                elif quant_config.quant_algo != hf_quant_algo:
-                    raise ValueError(
-                        f"Specified quant_algo={quant_config.quant_algo}, conflicting with quant_algo={hf_quant_algo} from HF quant config."
-                    )
-            else:
-                raise ValueError(
-                    "Pre-quantized checkpoint must have quant_algo.")
 
-            hf_kv_cache_quant_algo = hf_quant_config.pop(
-                "kv_cache_quant_algo", None)
-            if hf_kv_cache_quant_algo is not None:
-                hf_kv_cache_quant_algo = QuantAlgo(hf_kv_cache_quant_algo)
-                if quant_config.kv_cache_quant_algo is None:
-                    logger.info(
-                        f"Setting kv_cache_quant_algo={hf_kv_cache_quant_algo} form HF quant config."
-                    )
-                    quant_config.kv_cache_quant_algo = hf_kv_cache_quant_algo
-                elif quant_config.kv_cache_quant_algo != hf_kv_cache_quant_algo:
-                    raise ValueError(
-                        f"Specified kv_cache_quant_algo={quant_config.kv_cache_quant_algo}, conflicting with kv_cache_quant_algo={hf_kv_cache_quant_algo} from HF quant config."
-                    )
-            else:
-                if quant_config.kv_cache_quant_algo not in [
-                        None, QuantAlgo.FP8, QuantAlgo.NVFP4
-                ]:
-                    raise ValueError(
-                        f"Only kv_cache_quant_algo={QuantAlgo.FP8} or {QuantAlgo.NVFP4} is allowed for pre-quantized checkpoint, got {quant_config.kv_cache_quant_algo}."
-                    )
-
-            for key, value in hf_quant_config.items():
-                logger.info(
-                    f"Setting {key}={str(value)[:100]}{'...' if len(str(value)) > 100 else ''} from HF quant config."
-                )
-                setattr(quant_config, key, value)
-
+            quant_config = self.set_qunatization_attributes(quant_config, hf_quant_config)
+            print(quant_config)
             # Update the quant_config in llm_args for pytorch
             self.llm_args.quant_config = quant_config
 
@@ -405,6 +439,7 @@ class ModelLoader:
             with open(hf_config_path, "r") as f:
                 hf_config = json.load(f)
                 hf_quant_config = hf_config.get("quantization_config", None)
+                print(hf_quant_config)
 
             if hf_quant_config is not None:
                 logger.info(
@@ -425,6 +460,10 @@ class ModelLoader:
                         'block.*.attn.out', 'block.*.mlp.gate',
                         'block.*.attn.qkv', 'embedding', 'unembedding'
                     ]
+                elif hf_quant_config.get("quant_method") == "modelopt":
+                    quant_config = self.set_qunatization_attributes(quant_config, hf_quant_config)
+                    print(quant_config)
+                    self.llm_args.quant_config = quant_config
                 else:
                     raise NotImplementedError(
                         f"Unsupported quantization_config: {hf_quant_config}.")
