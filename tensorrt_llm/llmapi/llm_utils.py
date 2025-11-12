@@ -397,7 +397,7 @@ class ModelLoader:
 
         
         for key, value in hf_quant_config.items():
-            print(f"this is the key {key} and value {value}")
+            
             logger.info(
                 f"Setting {key}={str(value)[:100]}{'...' if len(str(value)) > 100 else ''} from HF quant config."
             )
@@ -411,66 +411,69 @@ class ModelLoader:
             prequantized (bool): Whether the checkpoint is pre-quantized.
         """
         quant_config = self.llm_args.quant_config
-        ckpt_quant_config = QuantConfig.from_model_dir(self._model_dir)
-        quant_config.update(ckpt_quant_config)
-
-        # quant_config = QuantConfig.from_hf_quant_config(hf_quant_config)
-
-        hf_quant_config_path = Path(f"{self._model_dir}/hf_quant_config.json")  
-        if hf_quant_config_path.exists():
-            
-            logger.info(
-                f"Found {hf_quant_config_path}, pre-quantized checkpoint is used."
-            )
-            with open(hf_quant_config_path, "r") as f:
-                hf_quant_config = json.load(f)
-                hf_quant_config = hf_quant_config["quantization"]
-
-
-            quant_config = self.set_qunatization_attributes(quant_config, hf_quant_config)
-            print(quant_config)
-            # Update the quant_config in llm_args for pytorch
-            self.llm_args.quant_config = quant_config
-
+        ckpt_quant_config = QuantConfig.from_model_dir(self._model_dir, self.llm_args.moe_config.backend)
+        if ckpt_quant_config is not None:
+            quant_config.update(ckpt_quant_config)
+            self.llm_args.quant_config = quant_config 
             return True
 
-        hf_config_path = f"{self._model_dir}/config.json"
-        if os.path.exists(hf_config_path):
-            with open(hf_config_path, "r") as f:
-                hf_config = json.load(f)
-                hf_quant_config = hf_config.get("quantization_config", None)
-                print(hf_quant_config)
-
-            if hf_quant_config is not None:
-                logger.info(
-                    f"Found quantization_config field in {hf_config_path}, pre-quantized checkpoint is used."
-                )
-                # DeepSeek V3 FP8 ckpt
-                if hf_quant_config.get(
-                        "quant_method") == "fp8" and hf_quant_config.get(
-                            "weight_block_size"):
-                    quant_config.quant_algo = QuantAlgo.FP8_BLOCK_SCALES
-                    quant_config.exclude_modules = ["*eh_proj"]
-                elif hf_quant_config.get("quant_method") == "mxfp4":
-                    from .._torch.model_config import ModelConfig
-                    quant_config.quant_algo = ModelConfig.get_mxfp4_quant_algo(
-                        self.llm_args.moe_config.backend)
-                    quant_config.group_size = 32
-                    quant_config.exclude_modules = [
-                        'block.*.attn.out', 'block.*.mlp.gate',
-                        'block.*.attn.qkv', 'embedding', 'unembedding'
-                    ]
-                elif hf_quant_config.get("quant_method") == "modelopt":
-                    quant_config = self.set_qunatization_attributes(quant_config, hf_quant_config)
-                    print(quant_config)
-                    self.llm_args.quant_config = quant_config
-                else:
-                    raise NotImplementedError(
-                        f"Unsupported quantization_config: {hf_quant_config}.")
-
-                return True
-
         return False
+
+        # hf_quant_config_path = Path(f"{self._model_dir}/hf_quant_config.json")  
+        # if hf_quant_config_path.exists():
+            
+        #     logger.info(
+        #         f"Found {hf_quant_config_path}, pre-quantized checkpoint is used."
+        #     )
+        #     with open(hf_quant_config_path, "r") as f:
+        #         hf_quant_config = json.load(f)
+        #         hf_quant_config = hf_quant_config["quantization"]
+
+
+        # quant_config = self.set_qunatization_attributes(quant_config, hf_quant_config)
+        # print(quant_config)
+        # # # Update the quant_config in llm_args for pytorch
+        
+
+        # return True
+
+        # hf_config_path = f"{self._model_dir}/config.json"
+        # if os.path.exists(hf_config_path):
+        #     with open(hf_config_path, "r") as f:
+        #         hf_config = json.load(f)
+        #         hf_quant_config = hf_config.get("quantization_config", None)
+        #         print(hf_quant_config)
+
+        #     if hf_quant_config is not None:
+        #         logger.info(
+        #             f"Found quantization_config field in {hf_config_path}, pre-quantized checkpoint is used."
+        #         )
+        #         # DeepSeek V3 FP8 ckpt
+        #         if hf_quant_config.get(
+        #                 "quant_method") == "fp8" and hf_quant_config.get(
+        #                     "weight_block_size"):
+        #             quant_config.quant_algo = QuantAlgo.FP8_BLOCK_SCALES
+        #             quant_config.exclude_modules = ["*eh_proj"]
+        #         elif hf_quant_config.get("quant_method") == "mxfp4":
+        #             from .._torch.model_config import ModelConfig
+        #             quant_config.quant_algo = ModelConfig.get_mxfp4_quant_algo(
+        #                 self.llm_args.moe_config.backend)
+        #             quant_config.group_size = 32
+        #             quant_config.exclude_modules = [
+        #                 'block.*.attn.out', 'block.*.mlp.gate',
+        #                 'block.*.attn.qkv', 'embedding', 'unembedding'
+        #             ]
+        #         elif hf_quant_config.get("quant_method") == "modelopt":
+        #             quant_config = self.set_qunatization_attributes(quant_config, hf_quant_config)
+        #             print(quant_config)
+        #             self.llm_args.quant_config = quant_config
+        #         else:
+        #             raise NotImplementedError(
+        #                 f"Unsupported quantization_config: {hf_quant_config}.")
+
+        #         return True
+
+        # return False
 
     def _load_model_from_hf(self):
         ''' Load a TRT-LLM model from a HF model. '''
