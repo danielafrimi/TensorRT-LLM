@@ -165,7 +165,28 @@ class QuantConfig:
         ]
         return QuantModeWrapper(quant_mode_list)
 
-    # def set_qunatization_attributes(self, quant_config, hf_quant_config):
+
+    # def update(self, quant_config_obj: 'QuantConfig'): # todo do we really need it ?
+
+    #     if self.quant_algo is not None and self.quant_algo != quant_config_obj.quant_algo:
+    #             raise ValueError(
+    #                 f"Specified quant_algo={self.quant_algo}, conflicting with quant_algo={quant_config_obj.quant_algo}."
+    #             )
+    #     # self.quant_algo = quant_config_obj.quant_algo
+    #     # logger.info(f"Setting quant_algo={quant_config_obj.quant_algo} form HF quant config.")
+
+
+    #     if self.kv_cache_quant_algo is not None and self.kv_cache_quant_algo != quant_config_obj.kv_cache_quant_algo:
+    #             raise ValueError(
+    #                 f"Specified kv_cache_quant_algo={self.kv_cache_quant_algo}, conflicting with kv_cache_quant_algo={quant_config_obj.kv_cache_quant_algo} from HF quant config."
+    #             )
+
+    #     for f in fields(quant_config_obj):  # todo not sure 
+    #         setattr(self, f.name, getattr(quant_config_obj, f.name))
+
+
+    # @classmethod
+    # def from_hf_quant_config(cls, hf_quant_config: dict) -> 'QuantConfig':
     #     hf_quant_algo = hf_quant_config.pop("quant_algo", None)
     #     if hf_quant_algo is not None:
     #         # fp8_pb_wo from modelopt is the same as fp8_block_scales
@@ -173,188 +194,86 @@ class QuantConfig:
     #             hf_quant_algo = QuantAlgo.FP8_BLOCK_SCALES
     #         else:
     #             hf_quant_algo = QuantAlgo(hf_quant_algo)
-    #         if quant_config.quant_algo is None:
-    #             logger.info(
-    #                 f"Setting quant_algo={hf_quant_algo} form HF quant config."
-    #             )
-    #             quant_config.quant_algo = hf_quant_algo
-    #         elif quant_config.quant_algo != hf_quant_algo:
-    #             raise ValueError(
-    #                 f"Specified quant_algo={quant_config.quant_algo}, conflicting with quant_algo={hf_quant_algo} from HF quant config."
-    #             )
     #     else:
     #         raise ValueError(
     #             "Pre-quantized checkpoint must have quant_algo.")
 
-    #     hf_kv_cache_quant_algo = hf_quant_config.pop(
-    #         "kv_cache_quant_algo", None)
+    #     hf_kv_cache_quant_algo = hf_quant_config.pop("kv_cache_quant_algo", None)
     #     if hf_kv_cache_quant_algo is not None:
     #         hf_kv_cache_quant_algo = QuantAlgo(hf_kv_cache_quant_algo)
-    #         if quant_config.kv_cache_quant_algo is None:
-    #             logger.info(
-    #                 f"Setting kv_cache_quant_algo={hf_kv_cache_quant_algo} form HF quant config."
-    #             )
-    #             quant_config.kv_cache_quant_algo = hf_kv_cache_quant_algo
-    #         elif quant_config.kv_cache_quant_algo != hf_kv_cache_quant_algo:
-    #             raise ValueError(
-    #                 f"Specified kv_cache_quant_algo={quant_config.kv_cache_quant_algo}, conflicting with kv_cache_quant_algo={hf_kv_cache_quant_algo} from HF quant config."
-    #             )
-    #     else:
-    #         # New HF format fallback: map kv_cache_scheme → kv_cache_quant_algo
-    #         kvs = hf_quant_config.pop("kv_cache_scheme", None)
-    #         if kvs and getattr(quant_config, "kv_cache_quant_algo", None) is None:
-    #             kvs_type = str(kvs.get("type", "")).lower()
-    #             kvs_bits = int(kvs.get("num_bits", 0))
-    #             if kvs_type == "float" and kvs_bits == 8:
-    #                 quant_config.kv_cache_quant_algo = QuantAlgo.FP8
-    #             elif kvs_type == "int" and kvs_bits == 4: # todo check it 
-    #                 quant_config.kv_cache_quant_algo = QuantAlgo.NVFP4
 
-    #         if quant_config.kv_cache_quant_algo not in [
-    #                 None, QuantAlgo.FP8, QuantAlgo.NVFP4
-    #         ]:
-    #             raise ValueError(
-    #                 f"Only kv_cache_quant_algo={QuantAlgo.FP8} or {QuantAlgo.NVFP4} is allowed for pre-quantized checkpoint, got {quant_config.kv_cache_quant_algo}."
-    #             )
-
-    #     print(f"this is the qunat config algo {quant_config.kv_cache_quant_algo}")
-
-    #     ignore = hf_quant_config.pop("ignore", None)
-    #     if ignore is not None and getattr(quant_config, "exclude_modules", None) is None: # new format
-    #         print("Daniel!!!!!!!!!!!!!!!", ignore)
-    #         quant_config.exclude_modules = ignore
-
-    #     if "pre_quant_scale" not in hf_quant_config:
-    #         print(f"this is the qunat config algo {quant_config.quant_algo}")
-    #         if quant_config.quant_algo in {QuantAlgo.W4A16_AWQ, QuantAlgo.W4A8_AWQ}:
-    #             quant_config.pre_quant_scale = True
-
-        
-    #     for key, value in hf_quant_config.items():
-    #         print(f"this is the key {key} and value {value}")
-    #         logger.info(
-    #             f"Setting {key}={str(value)[:100]}{'...' if len(str(value)) > 100 else ''} from HF quant config."
-    #         )
-    #         setattr(quant_config, key, value) 
-    #     return quant_config
-
-
-    def update(self, quant_config_obj: 'QuantConfig'):
-
-
-        if slef.quant_algo != quant_config_obj.quant_algo:
-                raise ValueError(
-                    f"Specified quant_algo={self.quant_algo}, conflicting with quant_algo={quant_config_obj.quant_algo} from HF quant config."
-                )
-
-        if self.kv_cache_quant_algo != quant_config_obj.kv_cache_quant_algo:
-                raise ValueError(
-                    f"Specified kv_cache_quant_algo={self.kv_cache_quant_algo}, conflicting with kv_cache_quant_algo={quant_config_obj.kv_cache_quant_algo} from HF quant config."
-                )
-
-        for key, value in quant_config_obj.items():
-            self.setattr(key, value) # todo check it 
-
-
-
-    @classmethod
-    def from_hf_quant_config(cls, hf_quant_config: dict) -> 'QuantConfig':
-        hf_quant_algo = hf_quant_config.pop("quant_algo", None)
-        if hf_quant_algo is not None:
-            # fp8_pb_wo from modelopt is the same as fp8_block_scales
-            if hf_quant_algo == "fp8_pb_wo":
-                hf_quant_algo = QuantAlgo.FP8_BLOCK_SCALES
-            else:
-                hf_quant_algo = QuantAlgo(hf_quant_algo)
-            if quant_config.quant_algo is None:
-                logger.info(
-                    f"Setting quant_algo={hf_quant_algo} form HF quant config."
-                )
-        else:
-            raise ValueError(
-                "Pre-quantized checkpoint must have quant_algo.")
-
-        hf_kv_cache_quant_algo = hf_quant_config.pop("kv_cache_quant_algo", None)
-        if hf_kv_cache_quant_algo is not None:
-            hf_kv_cache_quant_algo = QuantAlgo(hf_kv_cache_quant_algo)
-            if quant_config.kv_cache_quant_algo is None:
-                logger.info(
-                    f"Setting kv_cache_quant_algo={hf_kv_cache_quant_algo} form HF quant config."
-                )
-
-        return cls(quant_algo=hf_quant_algo, kv_cache_quant_algo=kv_cache_quant_algo, **hf_quant_config)
+    #     return cls(quant_algo=hf_quant_algo, kv_cache_quant_algo=hf_kv_cache_quant_algo, **hf_quant_config)
     
-    @classmethod
-    def from_config_file(cls, hf_quant_config: str, moe_config_backend) -> 'QuantConfig':
-        group_size = 128
-        quant_method = hf_quant_config.get("quant_method")
-        if quant_method == "fp8" and hf_quant_config.get(
-                    "weight_block_size"):
-            quant_algo = QuantAlgo.FP8_BLOCK_SCALES
-            exclude_modules = ["*eh_proj"]
-        elif quant_method == "mxfp4":
-            from .._torch.model_config import ModelConfig # todo check it 
-            quant_algo = ModelConfig.get_mxfp4_quant_algo(moe_config_backend) 
-            group_size = 32  
-            exclude_modules = [
-                'block.*.attn.out', 'block.*.mlp.gate',
-                'block.*.attn.qkv', 'embedding', 'unembedding'
-            ]
-        elif quant_method == "modelopt":
-            kv_cache_scheme = hf_quant_config.pop("kv_cache_scheme", None)
-            if kv_cache_scheme is not None: # todo needs to set it to None? in the begginign?? 
-                kvs_type = str(kvs.get("type", "")).lower()
-                kvs_bits = int(kvs.get("num_bits", 0))
-                if kvs_type == "float" and kvs_bits == 8:
-                    kv_cache_quant_algo = QuantAlgo.FP8
-                elif kvs_type == "int" and kvs_bits == 4: # todo check it 
-                    kv_cache_quant_algo = QuantAlgo.NVFP4
-
-            if kv_cache_quant_algo not in [
-                    None, QuantAlgo.FP8, QuantAlgo.NVFP4
-            ]:
-                raise ValueError(
-                    f"Only kv_cache_quant_algo={QuantAlgo.FP8} or {QuantAlgo.NVFP4} is allowed for pre-quantized checkpoint, got {quant_config.kv_cache_quant_algo}."
-                )
-
-            ignore = hf_quant_config.pop("ignore", None)
-            if ignore is not None:
-                exclude_modules = ignore
+    # @classmethod
+    # def from_config_file(cls, hf_quant_config: str, moe_config_backend) -> 'QuantConfig':
+    #     group_size = 128
+    #     kv_cache_quant_algo = None
+    #     pre_quant_scale = False
 
 
+    #     quant_method = hf_quant_config.pop("quant_method")
+    #     if quant_method == "fp8" and hf_quant_config.get(
+    #                 "weight_block_size"):
+    #         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
+    #         exclude_modules = ["*eh_proj"]
+    #     elif quant_method == "mxfp4":
+    #         from .._torch.model_config import ModelConfig 
+    #         quant_algo = ModelConfig.get_mxfp4_quant_algo(moe_config_backend) 
+    #         group_size = 32  
+    #         exclude_modules = [
+    #             'block.*.attn.out', 'block.*.mlp.gate',
+    #             'block.*.attn.qkv', 'embedding', 'unembedding'
+    #         ]
+    #     elif quant_method == "modelopt":
+    #         hf_quant_config.pop("producer", None) # pop out the producer field
+    #         quant_algo = hf_quant_config.pop("quant_algo", None)
+    #         if quant_algo is not None:
+    #             quant_algo = QuantAlgo(quant_algo)
+    #         else:
+    #             raise ValueError(
+    #                 "Pre-quantized checkpoint must have quant_algo.")
 
-            if "pre_quant_scale" not in hf_quant_config:
-                if quant_config.quant_algo in {QuantAlgo.W4A16_AWQ, QuantAlgo.W4A8_AWQ}:
-                    quant_config.pre_quant_scale = True
+    #         kv_cache_scheme = hf_quant_config.pop("kv_cache_scheme", None)
+    #         if kv_cache_scheme is not None:
+    #             kv_cache_quant_algo = cls._get_modelopt_kv_cache_dtype_from_config(kv_cache_scheme) # todo check it 
+    #         ignore = hf_quant_config.pop("ignore", None)
+    #         if ignore is not None:
+    #             exclude_modules = ignore
+    #         else:
+    #             exclude_modules = None
 
-        else:
-            raise NotImplementedError(
-                f"Unsupported quantization_config: {hf_quant_config}.")
+    #         if quant_algo in {QuantAlgo.W4A16_AWQ, QuantAlgo.W4A8_AWQ}:
+    #             pre_quant_scale = True
 
-        return cls(quant_algo=quant_algo, kv_cache_quant_algo=kv_cache_quant_algo, group_size=group_size, exclude_modules=exclude_modules, **hf_quant_config)
+    #     else:
+    #         raise NotImplementedError(
+    #             f"Unsupported quantization_config: {hf_quant_config}.")
 
-    @classmethod
-    def from_model_dir(cls, model_dir: str, moe_config_backend) -> Optional['QuantConfig']:
-        hf_quant_config_path = Path(f"{model_dir}/hf_quant_config.json")
-        if hf_quant_config_path.exists():
-            logger.info(f"Found {hf_quant_config_path}, pre-quantized checkpoint is used.")
-            with open(hf_quant_config_path, "r") as f:
-                hf_quant_config = json.load(f)
-                hf_quant_config = hf_quant_config["quantization"]
+    #     return cls(quant_algo=quant_algo, kv_cache_quant_algo=kv_cache_quant_algo, group_size=group_size, pre_quant_scale=pre_quant_scale, exclude_modules=exclude_modules, **hf_quant_config)
 
-            return cls.from_hf_quant_config(hf_quant_config)
+    # @classmethod
+    # def from_model_dir(cls, model_dir: str, moe_config_backend) -> Optional['QuantConfig']:
+    #     hf_quant_config_path = Path(f"{model_dir}/hf_quant_config.json")
+    #     if hf_quant_config_path.exists():
+    #         logger.info(f"Found {hf_quant_config_path}, pre-quantized checkpoint is used.")
+    #         with open(hf_quant_config_path, "r") as f:
+    #             hf_quant_config = json.load(f)
+    #             hf_quant_config = hf_quant_config["quantization"]
+
+    #         return cls.from_hf_quant_config(hf_quant_config)
         
-        hf_config_path = f"{self._model_dir}/config.json"
-        if os.path.exists(hf_config_path):
-            hf_config = json.load(f)
-            hf_quant_config = hf_config.get("quantization_config", None)
-            if hf_quant_config is not None:
-                logger.info(
-                    f"Found quantization_config field in {hf_config_path}, pre-quantized checkpoint is used."
-                )
-                return cls.from_config_file(hf_quant_config, moe_config_backend)
+    #     hf_config_path = Path(f"{model_dir}/config.json")
+    #     if os.path.exists(hf_config_path):
+    #         with open(hf_config_path, "r") as f:
+    #             hf_config = json.load(f)
+    #             hf_quant_config = hf_config.get("quantization_config", None)
+    #             if hf_quant_config is not None:
+    #                 logger.info(
+    #                     f"Found quantization_config field in {hf_config_path}, pre-quantized checkpoint is used."
+    #                 )
+    #         return cls.from_config_file(hf_quant_config, moe_config_backend)
 
-        return None
+    #     return None
 
 
     @cached_property
@@ -387,6 +306,7 @@ class QuantConfig:
             return True
         else:
             return False
+
 
     def _get_quant_cfg(self, module_name=None):
         if self.exclude_modules is not None:
@@ -425,6 +345,19 @@ class QuantConfig:
             return algo_to_modelopt_map[self.kv_cache_quant_algo]
         else:
             return None
+
+    @classmethod
+    def _get_modelopt_kv_cache_dtype_from_config(kv_cache_scheme):
+        kv_cache_quant_algo = None
+        kvs_type = str(kv_cache_scheme.get("type", "")).lower()
+        kvs_bits = int(kv_cache_scheme.get("num_bits", 0))
+        if kvs_type == "float" and kvs_bits == 8:
+            kv_cache_quant_algo = QuantAlgo.FP8
+        elif kvs_type == "int" and kvs_bits == 4:
+            kv_cache_quant_algo = QuantAlgo.NVFP4
+
+        return kv_cache_quant_algo
+        
 
     def is_module_excluded_from_quantization(self, name: str) -> bool:
         """Check if the module is excluded from quantization.

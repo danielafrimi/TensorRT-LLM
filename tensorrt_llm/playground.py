@@ -1,7 +1,11 @@
 from tensorrt_llm import LLM, SamplingParams
+from pathlib import Path
 
+
+w4a16_model = Path("/home/scratch.dafrimi_gpu/models/kv_cache_quantize/Llama-3.1-8B_qformat_int4_awq_kv_cache_fp8")
+fp8_model = Path("/home/scratch.dafrimi_gpu/models/kv_cache_quantize/Llama-3.1-8B_qformat_fp8_kv_cache_fp8")
 def main():
-    llm = LLM(model="/lustre/fsw/portfolios/coreai/projects/coreai_nvfm_llm/checkpoints/afrimi_ds_r1_ckpt/models/kv_cache_quantize/Llama-3.1-8B_qformat_int4_awq_kv_cache_fp8")
+    llm = LLM(model=w4a16_model)
     prompts = [
         "Hello, my name is",
         "The capital of France is",
@@ -13,5 +17,5 @@ def main():
 
 
 
-if __name__ == "__main__":  
+if __name__ == "__main__": 
     main()

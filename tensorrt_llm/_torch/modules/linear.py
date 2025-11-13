@@ -2094,7 +2094,7 @@ class Linear(nn.Module):
 
     def load_weights(self, weights: List[Dict]):
         assert self._weights_created
-
+        print(f"this isssssss {self.quant_method}")
         weight_mode = self.weights_loading_config.weight_mode
         self.quant_method.load_weights(self, weights, weight_mode)
 
